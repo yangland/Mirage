@@ -1,6 +1,7 @@
 # Mirage
 
-The implementation of CVPR 2025 paper: Infighting in the Dark: Multi-Label Backdoor Attack in Federated Learning
+The implementation of paper: **Infighting in the Dark: Multi-Label Backdoor Attack in Federated Learning**
+
 
 Support Apple mps.
 
