@@ -1,0 +1,95 @@
+# vanilla attack with pixel block trigger no defense yaml
+
+resumed_model: saved_models/ResNet_18_cifar10_ptm_2000_benign.pt
+data_dir:   /home/miles/data
+load_data_from_pkl: False
+pre_cache_data_path: data/pre_cached_data.pt.tar
+save_on_iteration : [2010,2020,2030,2040,2050,2060,2070,2080,2090,2100,2150,2200,2250,2300,2350,2400,2450,3000]
+
+
+### Benign Client Setting
+# Optimizer Setting
+benign_lr: 0.1 #0.1
+benign_momentum: 0.9
+benign_weight_decay: 0.0005 #0.0005
+
+# Training Process Setting
+benign_is_projection_grad: False
+benign_projection_norm: 3
+benign_retrain_no_times: 2
+
+# Learning rate
+gamma: 1
+target_lr : 0.02
+lr_method: linear
+
+### Malicious Client Setting
+# Optimizer Setting
+poisoned_lr: 0.01
+poisoned_momentum: 0.9
+poisoned_weight_decay: 0.0005
+
+
+# Training Process Setting
+poisoned_is_projection_grad: False
+poisoned_projection_norm: 5
+poisoned_retrain_no_times: 5
+
+poisoned_iteration_interval: 1
+malicious_aggregate_all_layer: 1
+
+# Poisoned Task Setting
+poison_task_name: "pixel pattern"
+pixel_pattern: True
+poison_train_batch_size: 64
+
+# norm clipping setting
+norm_clip: False
+fix_nc_bound: True
+nc_bound: 2
+
+### Server Setting
+agg_method: FedProx
+Fedprox_mu: 0 #0.5
+
+
+
+sample_dirichlet: True
+dirichlet_alpha: 1
+
+train_batch_size: 64
+test_batch_size: 1000
+no_of_total_participants: 100
+no_of_participants_per_iteration: 10
+
+
+poisoned_pattern_choose: 2 #1 (pixel), 2 (blend),
+blend_alpha: 0.3
+poison_label_swap: [0,1,2,3,4]
+round_ndigits: 4
+
+
+### for Mirage
+
+discriminator_train_samples_pre_class: 50
+discriminator_batch_size: 64
+discriminator_lr: 0.01
+
+discriminator_momentum: 0.9
+discriminator_weight_decay: 0.0005
+discriminator_train_no_times: 30
+trigger_search_no_times: 50
+trigger_lr : 0.001
+
+
+show_train_log: False
+start_iteration: 2000
+end_iteration: 2100
+start_save_iteration: 9999
+poisoned_start_iteration: 2000
+poisoned_end_iteration: 2100
+poisoned_len: 8
+trigger_size: 5
+seed: 123
+malicious_train_algo: Mirage
+defense_method: nodefense
