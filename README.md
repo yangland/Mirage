@@ -24,15 +24,11 @@ Support Apple mps.
 
 # Citation
 We appreciate it if you would please cite the following paper if you found the repository useful for your work:
-
-> @article{Mirage_2024_Li,
-> 
-> title={Infighting in the Dark: Multi-Labels Backdoor Attack in Federated Learning},
-> 
-> author={Li, Ye and Zhao, Yanchao and Zhu, Chengcheng and Zhang, Jiale},
-> 
-> journal={arXiv preprint arXiv:2409.19601},
-> 
-> year={2024}
-> 
-> }
+```BibTeX
+@article{Mirage_2024_Li,
+title={Infighting in the Dark: Multi-Labels Backdoor Attack in Federated Learning},
+author={Li, Ye and Zhao, Yanchao and Zhu, Chengcheng and Zhang, Jiale},
+journal={arXiv preprint arXiv:2409.19601},
+year={2024}
+}
+```
