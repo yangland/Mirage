@@ -93,3 +93,5 @@ trigger_size: 5
 seed: 123
 malicious_train_algo: Mirage
 defense_method: nodefense
+
+benign_sample_for_region: 5

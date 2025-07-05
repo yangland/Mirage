@@ -33,3 +33,38 @@ journal={arXiv preprint arXiv:2409.19601},
 year={2024}
 }
 ```
+
+```
+Mirage
+├─ Mirage
+│  ├─ datasets
+│  │  └─ MSP_dataloader.py
+│  ├─ main.py
+│  ├─ models
+│  │  ├─ resnet.py
+│  │  ├─ simpleNet.py
+│  │  └─ vgg.py
+│  ├─ participants
+│  │  ├─ clients
+│  │  │  ├─ BasicClient.py
+│  │  │  ├─ BenignClient.py
+│  │  │  ├─ MalicilousClient.py
+│  │  │  ├─ MirageClient.py
+│  │  │  └─ __init__.py
+│  │  └─ servers
+│  │     ├─ BasicServer.py
+│  │     └─ No_defense_Server.py
+│  ├─ README.md
+│  ├─ saved_models
+│  │  └─ ResNet18_cifar10_ptm_2000_benign.pt
+│  ├─ utils
+│  │  ├─ losses.py
+│  │  ├─ utils.py
+│  │  └─ visualize.py
+│  └─ yamls
+│     └─ Mirage
+│        └─ Mirage_nodefense.yaml
+├─ project_structure.txt
+└─ README.md
+
+```

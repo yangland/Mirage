@@ -11,7 +11,8 @@ import ot
 from participants.clients.BasicClient import BasicClient
 from utils.utils import poisoned_batch_injection
 from utils.visualize import visualize, visualize_batch, visualize_tsne
-
+from utils.regoin_utils import compute_benign_statistics, is_within_l2_ball, is_within_update_cone, is_within_weight_cone, flatten_model, unflatten_model
+import torch.nn.functional as F
 
 logger = logging.getLogger("logger")
 
@@ -205,7 +206,7 @@ class MirageClient(BasicClient):
                     t.requires_grad_()
         return t.detach_()
 
-    def local_train(self, iteration, model, train_loader, client_id, test_loader=None):
+    def local_train_mirage(self, iteration, model, train_loader, client_id, test_loader=None):
         '''
         poisoning training process
 
@@ -253,3 +254,73 @@ class MirageClient(BasicClient):
             # print(f"asr - {asr}, loss - {loss}")
         return cache_model
 
+
+    def local_train(self, iteration, model, train_loader, client_id, test_loader=None, region_constraint=None):
+        """
+        Modified local training with region-constrained backdoor crafting (PGD).
+        """
+        global_model = copy.deepcopy(model)
+        cache_model = copy.deepcopy(model)
+        cache_model.train()
+
+        optimizer = torch.optim.SGD(cache_model.parameters(), lr=self.params['poisoned_lr'],
+                                    momentum=self.params['poisoned_momentum'],
+                                    weight_decay=self.params['poisoned_weight_decay'])
+
+        # === Step 1: Optimize the trigger ===
+        trigger_ = self.search_trigger(cache_model, train_loader, client_id)
+        self.trigger_set[client_id] = trigger_
+
+        mask_ = self.mask_set[client_id]
+        target_label = self.params["poison_label_swap"][client_id]
+        ce_loss = nn.CrossEntropyLoss().to(self.params["run_device"])
+
+        # === Step 2: Train local model with trigger & region constraint ===
+        for epoch in range(self.params["poisoned_retrain_no_times"]):
+            for batch_idx, batch in enumerate(train_loader):
+                inputs, labels = poisoned_batch_injection(batch,
+                                                        trigger=self.trigger_set[client_id],
+                                                        mask=self.mask_set[client_id],
+                                                        is_eval=False,
+                                                        label_swap=target_label)
+
+                inputs, labels = inputs.to(self.params["run_device"]), labels.to(self.params["run_device"])
+
+                outputs = cache_model(inputs)
+                loss = ce_loss(outputs, labels)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                # === Step 3: Project model back into region ℛ_j ===
+                # Compute Δ = θᵢ - θᵗ (flattened)
+                delta = flatten_model(cache_model) - flatten_model(global_model)
+
+                # Get projection direction v_j and constraints
+                v_j = region_constraint.get("direction")  # axis vector
+                tau_j = region_constraint.get("cosine_threshold")
+                r_min = region_constraint.get("r_min")
+                r_max = region_constraint.get("r_max")
+
+                # Project Δ onto norm bounds
+                norm = torch.norm(delta, p=2)
+                if r_max is not None and norm > r_max:
+                    delta = delta / norm * r_max
+                elif r_min is not None and norm < r_min:
+                    delta = delta / norm * r_min
+
+                # Project Δ to satisfy cosine constraint
+                if v_j is not None and tau_j is not None:
+                    cos_sim = F.cosine_similarity(delta.unsqueeze(0), v_j.unsqueeze(0)).item()
+                    if cos_sim < tau_j:
+                        # Project onto cone by moving delta closer to v_j direction
+                        v_j_norm = v_j / torch.norm(v_j, p=2)
+                        delta = tau_j * torch.norm(delta, p=2) * v_j_norm
+
+                # Update model: θᵢ = θᵗ + Δ
+                new_flat = flatten_model(global_model) + delta
+                cache_model = unflatten_model(new_flat, global_model)
+                cache_model.train()
+
+        return cache_model
