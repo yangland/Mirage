@@ -10,16 +10,17 @@ import argparse
 from colorama import Fore
 from torchsummary import summary
 
+from datasets.MSP_dataloader import MSPDataloader
 
 from participants.clients.BenignClient import BenignClient
 from participants.clients.MalicilousClient import MaliciousClient
 from participants.clients.MirageClient import MirageClient
 from participants.servers.No_defense_Server import No_defense_Server
 
-from utils.utils import args_update, model_dist_norm_var, poisoned_batch_injection
-from datasets.MSP_dataloader import MSPDataloader
-
+from utils.utils import args_update, model_dist_norm_var, poisoned_batch_injection, evaluate_asr_before_aggregation, evaluate_asr_after_aggregation
 from utils.visualize import visualize_batch
+from utils.backdoor_survival_tracker import BackdoorSurvivalTracker
+tracker = BackdoorSurvivalTracker(save_dir="results/backdoor_tracking")
 
 logger = logging.getLogger("logger")
 
@@ -89,14 +90,49 @@ if __name__ == "__main__":
         logger.info(f"====================== Current Round: {iteration} ======================")
         server.pre_process(test_data=server.test_dataloader, iteration=iteration)
 
-        weight_accumulator, weight_accumulator_by_client, aggregated_model_id \
-                = server.broadcast_upload(
+        (
+            weight_accumulator,
+            weight_accumulator_by_client,
+            aggregated_model_id,
+            region_assignments,
+            malicious_models_by_id  # NEW: dictionary from client_id → crafted model
+        )   = server.broadcast_upload(
                 iteration=iteration,
                 benign_client=benign_client,
-                malicious_client=malicious_client)
+                malicious_client=malicious_client
+            )
+        
+        # === Aggregate model
         server.aggregation(weight_accumulator=weight_accumulator, aggregated_model_id=aggregated_model_id)
         logger.info(f"aggregated_model:{aggregated_model_id}")
 
+        # === Evaluate global model
         server.test_global_model(iteration=iteration, malicious_clients=malicious_client)
 
+        # === Save model checkpoint
         server.save_model(iteration, malicious_client.trigger_set, malicious_client.mask_set)
+
+        # === Step 4: Evaluate ASR before aggregation
+        avg_asr_before = evaluate_asr_before_aggregation(
+            server=server,
+            malicious_models_by_id=malicious_models_by_id,
+            region_assignments=region_assignments,
+            malicious_client=malicious_client,
+            params=params_loaded
+        )
+
+        # === Step 5: Evaluate ASR after aggregation
+        avg_asr_after = evaluate_asr_after_aggregation(
+            server=server,
+            region_assignments=region_assignments,
+            malicious_client=malicious_client,
+            params=params_loaded
+        )
+
+        # === Log to tracker
+        tracker.log_iteration(iteration, avg_asr_before, avg_asr_after)
+
+# ==================== End of Training ====================
+# Save backdoor survival results
+tracker.save_csv(filename=f"backdoor_survival_log_{params_loaded['defense_method']}.csv")
+tracker.summarize_preferences()

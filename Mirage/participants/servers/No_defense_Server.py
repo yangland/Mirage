@@ -145,4 +145,11 @@ class No_defense_Server(BasicServer):
         for client_ind, client_id in enumerate(selected_clients_list):
             logger.info(f"Client {client_id} update norm: {update_norm_list[client_ind]}")
 
-        return weight_accumulator, weight_accumulator_by_client, aggregated_model_id
+        return (
+                weight_accumulator,
+                weight_accumulator_by_client,
+                aggregated_model_id,
+                region_assignments,                  # NEW
+                malicious_client.asr_before_upload  # NEW, you'll store this per-client in MirageClient
+            )
+

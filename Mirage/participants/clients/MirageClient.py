@@ -21,6 +21,7 @@ class MirageClient(BasicClient):
     def __init__(self, params, train_dataloader, test_dataloader):
         super(MirageClient, self).__init__(params, train_dataloader, test_dataloader)
         self.init_trigger_mask()
+        self.asr_before_upload = {}
 
     def generate_discriminator_dataloader(self, model, train_loader, trigger_, mask_, client_id):
         '''
@@ -258,6 +259,7 @@ class MirageClient(BasicClient):
     def local_train(self, iteration, model, train_loader, client_id, test_loader=None, region_constraint=None):
         """
         Modified local training with region-constrained backdoor crafting (PGD).
+        Also computes ASR before upload.
         """
         global_model = copy.deepcopy(model)
         cache_model = copy.deepcopy(model)
@@ -278,11 +280,13 @@ class MirageClient(BasicClient):
         # === Step 2: Train local model with trigger & region constraint ===
         for epoch in range(self.params["poisoned_retrain_no_times"]):
             for batch_idx, batch in enumerate(train_loader):
-                inputs, labels = poisoned_batch_injection(batch,
-                                                        trigger=self.trigger_set[client_id],
-                                                        mask=self.mask_set[client_id],
-                                                        is_eval=False,
-                                                        label_swap=target_label)
+                inputs, labels = poisoned_batch_injection(
+                    batch,
+                    trigger=self.trigger_set[client_id],
+                    mask=self.mask_set[client_id],
+                    is_eval=False,
+                    label_swap=target_label
+                )
 
                 inputs, labels = inputs.to(self.params["run_device"]), labels.to(self.params["run_device"])
 
@@ -294,7 +298,6 @@ class MirageClient(BasicClient):
                 optimizer.step()
 
                 # === Step 3: Project model back into region ℛ_j ===
-                # Compute Δ = θᵢ - θᵗ (flattened)
                 delta = flatten_model(cache_model) - flatten_model(global_model)
 
                 # Get projection direction v_j and constraints
@@ -314,7 +317,6 @@ class MirageClient(BasicClient):
                 if v_j is not None and tau_j is not None:
                     cos_sim = F.cosine_similarity(delta.unsqueeze(0), v_j.unsqueeze(0)).item()
                     if cos_sim < tau_j:
-                        # Project onto cone by moving delta closer to v_j direction
                         v_j_norm = v_j / torch.norm(v_j, p=2)
                         delta = tau_j * torch.norm(delta, p=2) * v_j_norm
 
@@ -323,4 +325,39 @@ class MirageClient(BasicClient):
                 cache_model = unflatten_model(new_flat, global_model)
                 cache_model.train()
 
+        # === Step 4: Evaluate ASR before upload ===
+        asr = None
+        if test_loader is not None:
+            cache_model.eval()
+            total_correct = 0
+            total = 0
+
+            with torch.no_grad():
+                for inputs, labels in test_loader:
+                    # Only use samples not already with target label
+                    sample_indices = ~(labels == target_label)
+                    inputs = inputs[sample_indices]
+                    labels = labels[sample_indices]
+
+                    if len(inputs) == 0:
+                        continue
+
+                    # Apply trigger
+                    inputs = (1 - mask_) * inputs + mask_ * trigger_
+                    inputs = inputs.to(self.params["run_device"])
+                    labels_poisoned = torch.full_like(labels, target_label).to(self.params["run_device"])
+
+                    outputs = cache_model(inputs)
+                    preds = outputs.argmax(dim=1)
+
+                    total_correct += (preds == labels_poisoned).sum().item()
+                    total += inputs.size(0)
+
+            asr = total_correct / total if total > 0 else 0.0
+            self.asr_before_upload[client_id] = asr
+            logger.info(f"[Iteration {iteration}] Client {client_id} ASR before upload: {asr:.4f}")
+        else:
+            self.asr_before_upload[client_id] = None  # fallback if test_loader is missing
+
         return cache_model
+

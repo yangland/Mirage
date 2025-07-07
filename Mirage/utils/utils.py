@@ -147,3 +147,68 @@ def update_weight_accumulator(model, global_model, weight_accumulator, weight = 
     return weight_accumulator, single_weight_accumulator
 
 
+def evaluate_asr_before_aggregation(server, malicious_models_by_id, region_assignments, malicious_client, params):
+    """
+    Compute ASR before aggregation for each region.
+    Returns: dict {region_id: avg_asr}
+    """
+    region_id_to_asrs = {}
+
+    for client_id, model in malicious_models_by_id.items():
+        region_id = region_assignments[client_id]
+        trigger = malicious_client.trigger_set[client_id]
+        mask = malicious_client.mask_set[client_id]
+        label_swap = params["poison_label_swap"][client_id]
+
+        asr, _ = server.test_model_once(
+            iteration=None,
+            test_dataloader=server.test_dataloader,
+            is_poisoned=True,
+            model=model,
+            trigger=trigger,
+            mask=mask,
+            label_swap=label_swap
+        )
+
+        region_id_to_asrs.setdefault(region_id, []).append(asr)
+
+    # Average ASR per region
+    avg_asr_before = {
+        region_id: sum(asrs) / len(asrs) if len(asrs) > 0 else 0.0
+        for region_id, asrs in region_id_to_asrs.items()
+    }
+
+    return avg_asr_before
+
+
+def evaluate_asr_after_aggregation(server, region_assignments, malicious_client, params):
+    """
+    Compute ASR after aggregation for each region.
+    Returns: dict {region_id: avg_asr}
+    """
+    region_id_to_asrs = {}
+
+    for client_id, region_id in region_assignments.items():
+        trigger = malicious_client.trigger_set[client_id]
+        mask = malicious_client.mask_set[client_id]
+        label_swap = params["poison_label_swap"][client_id]
+
+        asr, _ = server.test_model_once(
+            iteration=None,
+            test_dataloader=server.test_dataloader,
+            is_poisoned=True,
+            model=None,  # use global model
+            trigger=trigger,
+            mask=mask,
+            label_swap=label_swap
+        )
+
+        region_id_to_asrs.setdefault(region_id, []).append(asr)
+
+    # Average ASR per region
+    avg_asr_after = {
+        region_id: sum(asrs) / len(asrs) if len(asrs) > 0 else 0.0
+        for region_id, asrs in region_id_to_asrs.items()
+    }
+
+    return avg_asr_after
