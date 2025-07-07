@@ -117,7 +117,9 @@ if __name__ == "__main__":
         )
 
         # === Step 3: Aggregate model
-        server.aggregation(weight_accumulator=weight_accumulator, aggregated_model_id=aggregated_model_id)
+        server.aggregation(agg_method=params_loaded["agg_method"],
+                           weight_accumulator_by_client=weight_accumulator_by_client)
+        
         logger.info(f"aggregated_model: {aggregated_model_id}")
 
         # === Step 4: Evaluate global model

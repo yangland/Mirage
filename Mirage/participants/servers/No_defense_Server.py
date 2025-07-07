@@ -2,7 +2,7 @@ import copy
 import random
 import logging
 import time
-
+import itertools
 from tqdm import tqdm
 
 from participants.servers.BasicServer import BasicServer
@@ -72,7 +72,7 @@ class No_defense_Server(BasicServer):
         current_no_of_adversaries = sum([1 for client_id in selected_clients_list if client_id in malicious_clients_list])
 
         weight_accumulator = self.create_weight_accumulator()
-        weight_accumulator_by_client = []
+        weight_accumulator_by_client = {}
         update_norm_list = []
         global_model_copy = self.create_global_model_copy()
         global_model = copy.deepcopy(self.global_model)
@@ -107,8 +107,10 @@ class No_defense_Server(BasicServer):
         malicious_clients_this_round = [cid for cid in selected_clients_list if cid in malicious_clients_list]
         possible_region_ids = list(region_constraints.keys())
 
+        region_pool = itertools.cycle(possible_region_ids)
         for client_id in malicious_clients_this_round:
-            region_assignments[client_id] = random.choice(possible_region_ids)
+            # region_assignments[client_id] = random.choice(possible_region_ids)
+            region_assignments[client_id] = next(region_pool)
 
         # === Step 4: Train clients ===
         for client_id in tqdm(selected_clients_list):
@@ -139,7 +141,7 @@ class No_defense_Server(BasicServer):
             weight_accumulator, single_wa = update_weight_accumulator(
                 updated_model, copy.deepcopy(self.global_model), weight_accumulator
             )
-            weight_accumulator_by_client.append(single_wa)
+            weight_accumulator_by_client[client_id] = single_wa
             del local_model
 
         for client_ind, client_id in enumerate(selected_clients_list):

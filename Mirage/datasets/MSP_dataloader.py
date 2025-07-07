@@ -67,9 +67,6 @@ class MSPDataloader():
             self.test_dataset = datasets.CIFAR100(f"{self.params['data_dir']}", train=False, download=True,
                                                   transform=transform_test)
         elif self.params["dataset"].upper() == "GTSRB":
-            # self.train_dataset = datasets.EMNIST(f"{self.params['data_dir']}", train=True, split="mnist", download=True,
-            #                                      transform=transform_emnist)
-            # self.test_dataset = datasets.EMNIST(f"{self.params['data_dir']}", train=False, split="mnist", transform=transform_emnist)
             self.train_dataset = datasets.GTSRB(f"{self.params['data_dir']}", split="train", download=True,
                                                 transform=transform_grstb)
             self.train_dataset = [sample for sample in self.train_dataset] * 3
@@ -78,9 +75,6 @@ class MSPDataloader():
 
 
         elif self.params["dataset"].upper() == "EMNIST":
-            # self.train_dataset = datasets.EMNIST(f"{self.params['data_dir']}", train=True, split="mnist", download=True,
-            #                                      transform=transform_emnist)
-            # self.test_dataset = datasets.EMNIST(f"{self.params['data_dir']}", train=False, split="mnist", transform=transform_emnist)
             self.train_dataset = datasets.MNIST(f"{self.params['data_dir']}", train=True, download=True,
                                                 transform=transform_emnist)
             self.test_dataset = datasets.MNIST(f"{self.params['data_dir']}", train=False, transform=transform_emnist)

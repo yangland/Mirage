@@ -65,7 +65,7 @@ no_of_participants_per_iteration: 10
 
 poisoned_pattern_choose: 2 #1 (pixel), 2 (blend),
 blend_alpha: 0.3
-poison_label_swap: [0,1,2,3,4]
+poison_label_swap: [0,1,2,3,4,5,6,7,8,9]
 round_ndigits: 4
 
 
@@ -94,4 +94,6 @@ seed: 123
 malicious_train_algo: Mirage
 defense_method: nodefense
 
+# Region Setting
 benign_sample_for_region: 5
+# malicious_region_map: {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 0, 9: 1}

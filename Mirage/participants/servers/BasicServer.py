@@ -5,12 +5,14 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-
 import torchvision.models
+
 import models.resnet
 import models.vgg
 from utils.utils import poisoned_batch_injection
 from utils.visualize import visualize, visualize_batch, visualize_tsne
+from aggr import aggregate_global_model
+
 
 logger = logging.getLogger("logger")
 
@@ -278,19 +280,47 @@ class \
             global_model_copy[name] = self.global_model.state_dict()[name].clone().detach().requires_grad_(False)
         return global_model_copy
 
-    def aggregation(self, weight_accumulator, aggregated_model_id):
-        '''
-        model aggregation
+    # def aggregation(self, weight_accumulator, aggregated_model_id):
+    #     '''
+    #     model aggregation
 
-        :param weight_accumulator:
-        :param aggregated_model_id:
-        :param update_norm_list:
-        :return:
-        '''
+    #     :param weight_accumulator:
+    #     :param aggregated_model_id:
+    #     :param update_norm_list:
+    #     :return:
+    #     '''
 
-        no_of_participants_this_round = sum(aggregated_model_id)
-        if no_of_participants_this_round != 0:
-            for name, data in self.global_model.state_dict().items():
-                update_per_layer = weight_accumulator[name] * (1 / no_of_participants_this_round)
-                data = data.float()
-                data.add_(update_per_layer)
+    #     no_of_participants_this_round = sum(aggregated_model_id)
+    #     if no_of_participants_this_round != 0:
+    #         for name, data in self.global_model.state_dict().items():
+    #             update_per_layer = weight_accumulator[name] * (1 / no_of_participants_this_round)
+    #             data = data.float()
+    #             data.add_(update_per_layer)
+
+    def aggregation(self, agg_method, weight_accumulator_by_client):
+        """
+        Aggregates model using specified strategy (FedAvg, Krum, etc.)
+
+        :param weight_accumulator: unused in new version
+        :param aggregated_model_id: used to know how many participated
+        :param weight_accumulator_by_client: list of state_dicts (updates)
+        """
+        agg_method = self.params.get("agg_method", "unknown").lower()
+        
+        # === Convert list of state_dicts to dict[str, state_dict]
+        client_grad_dict = {
+            f"client_{i}": update for i, update in enumerate(weight_accumulator_by_client)
+        }
+
+        # === Call aggregation dispatcher
+        aggregated_update = aggregate_global_model(
+            agg_method=agg_method,
+            server_model=self.global_model,
+            client_grad_dict=client_grad_dict,
+            params=self.params,
+            iteration=getattr(self, "current_iteration", 0),
+        )
+
+        # === Apply aggregated update to global model
+        for name, param in self.global_model.state_dict().items():
+            param.add_(aggregated_update[name].to(param.device))
