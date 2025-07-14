@@ -6,9 +6,9 @@ import torch.nn.functional as F
 # from aggr.fltrust import modelsd2tensor
 import sys
 import os
-from utilities import get_model_update, no_defence_balance, get_model_merged, get_model_update, modelsd2flat
 from aggr.fedavg_median import fedavg
-from visualization import matrix_plot
+
+# from visualization import matrix_plot
 # Manually specify the path to your project folder
 project_path = os.path.abspath('..')  # Or provide the full path if needed
 sys.path.append(project_path)
@@ -17,19 +17,19 @@ logger = logging.getLogger("individual_logging")
 logger.addHandler(logging.StreamHandler())
 
 
-def flame_aggr(server_sd, grad_dict, noise=0.001, exp_dir="", iter=0):
-    client_ids = list(grad_dict.keys())
+def flame_aggr(server_model_state_dict, client_updates_dict, noise=0.001, exp_dir="", iter=0, **kwargs):
+    client_ids = list(client_updates_dict.keys())
     reveled_model_dict = {}
     
     # Convert gradients to model states (current approach)
     for client_id in client_ids:
-        reveled_model_dict[client_id] = get_model_merged(grad_dict[client_id], server_sd)
+        reveled_model_dict[client_id] = get_model_merged(client_updates_dict[client_id], server_model_state_dict)
         
     # Get updated server state
-    new_server_sd, flame_clients = flame(server_sd, reveled_model_dict, noise, client_ids, exp_dir, iter)
+    new_server_sd, flame_clients = flame(server_model_state_dict, reveled_model_dict, noise, client_ids, exp_dir, iter)
     
     # Return the gradient update (difference between new and old server state)
-    server_grad = get_model_update(new_server_sd, server_sd)
+    server_grad = get_model_update(new_server_sd, server_model_state_dict)
     
     return server_grad, flame_clients
 
@@ -74,23 +74,18 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
         logger.info(f"FLAME: NaN locations: {np.where(np.isnan(cos_list))}")
         cos_list = np.nan_to_num(cos_list, nan=0.0)
     
-    # logger.info(f"cos_list len: {len(cos_list)}")
-    # logger.info(f"cos_M: {np.array(cos_list)}")
-    
-    # plot the cosine similarity matrix
-    # Create the directory if it doesn't exist
-    os.makedirs(f"{exp_dir}/plots/flame_cos", exist_ok=True)
+    # os.makedirs(f"{exp_dir}/plots/flame_cos", exist_ok=True)
 
     # Plot the cosine similarity matrix
-    matrix_plot(
-        np.array(cos_list), 
-        f"cos_M{iter}", 
-        f"cos_M_{iter}", 
-        "client_id", 
-        "client_id",
-        f"{exp_dir}/plots/flame_cos", 
-        client_ids=client_ids
-    )
+    # matrix_plot(
+    #     np.array(cos_list), 
+    #     f"cos_M{iter}", 
+    #     f"cos_M_{iter}", 
+    #     "client_id", 
+    #     "client_id",
+    #     f"{exp_dir}/plots/flame_cos", 
+    #     client_ids=client_ids
+    # )
     
     clusterer = hdbscan.HDBSCAN(min_cluster_size=num_clients//2 + 1,min_samples=1,allow_single_cluster=True).fit(cos_list)
     logger.info(f"FLAME: clusterer.labels_ {str(clusterer.labels_)}")
@@ -166,3 +161,40 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
     
     return  new_server_sd, benign_client_ids
 
+
+def get_model_update(updated_model, model):
+    '''Returns the difference while preserving gradients'''
+    update = {}
+    for key in updated_model:
+        if key.endswith('num_batches_tracked'):
+            continue
+        update[key] = updated_model[key] - model[key].detach()  # Explicitly detach base model
+    return update
+
+def get_model_merged(gradient_update, base_model):
+    '''Merges gradient into model while preserving autograd'''
+    merged = {}
+    for key in base_model:
+        if key.endswith('num_batches_tracked'):
+            merged[key] = base_model[key]  # Copy directly
+        else:
+            # Preserve gradient from the update while keeping base model constant
+            merged[key] = base_model[key].detach() + gradient_update[key]
+    return merged
+
+
+def modelsd2flat(model_dict):
+    """
+    Flattens a model's state dictionary into a single 1D tensor.
+    Skips non-trainable buffers like 'num_batches_tracked' for consistency.
+    """
+    ravel_list = []
+    for layer_name, parms in model_dict.items():
+        if isinstance(parms, torch.Tensor) and not layer_name.endswith('num_batches_tracked'):
+            ravel_list.append(parms.detach().reshape(-1))
+    
+    if not ravel_list:
+        return torch.tensor([])
+    
+    flat_tensor = torch.cat(ravel_list)
+    return flat_tensor

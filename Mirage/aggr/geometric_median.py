@@ -4,15 +4,15 @@ from scipy.spatial.distance import cdist
 import torch
 
 
-def geo_med_aggr(model_dict, device):
+def geo_med_aggr(server_model_state_dict, client_updates_dict, device, **kwargs):
     model_weight = dict()
-    client_ids = list(model_dict.keys())
+    client_ids = list(client_updates_dict.keys())
 
     with torch.no_grad():
-        for layer_name, param in model_dict[client_ids[0]].items():
+        for layer_name, param in client_updates_dict[client_ids[0]].items():
             layer_weights = {}
             for client_id in client_ids:
-                layer_weights[client_id] = model_dict[client_id][layer_name]
+                layer_weights[client_id] = client_updates_dict[client_id][layer_name]
             # print("layer_weights", layer_weights)
             geo_med, client_weights = geometric_median(layer_weights)
             model_weight[layer_name] = geo_med.to(device)

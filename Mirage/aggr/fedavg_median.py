@@ -2,15 +2,15 @@ import numpy as np
 import torch
 from copy import deepcopy
 
-def coordinate_wise_median(model_dict):
+def coordinate_wise_median(server_model_state_dict, client_updates_dict, **kwargs):
     new_weights = dict()
-    client_ids = list(model_dict.keys())
+    client_ids = list(client_updates_dict.keys())
 
     with torch.no_grad():
-        for name, param in model_dict[client_ids[0]].items():
+        for name, param in client_updates_dict[client_ids[0]].items():
             layer_weights = []
             for client_id in client_ids:
-                layer_weights.append(model_dict[client_id][name])
+                layer_weights.append(client_updates_dict[client_id][name])
 
             t = torch.stack(layer_weights)
             med = t.float().median(0)[0]
@@ -19,45 +19,96 @@ def coordinate_wise_median(model_dict):
     return new_weights
 
 
-def fedavg(models, average_bn_buffers=True):
+# def fedavg(server_model_state_dict, client_updates_dict, average_bn_buffers=True, **kwargs):
+#     """
+#     Federated averaging of model parameters.
+    
+#     Args:
+#         models: Dict or list of model state_dicts
+#         average_bn_buffers: Whether to average BatchNorm buffers (running_mean/var)
+#                            num_batches_tracked is always taken from first model
+#     Returns:
+#         Averaged state_dict
+#     """
+#     model_list = list(client_updates_dict.values()) if isinstance(client_updates_dict, dict) else client_updates_dict
+#     avg_model = deepcopy(model_list[0])
+
+#     # Process all parameters except num_batches_tracked
+#     for key in avg_model:
+#         if 'num_batches_tracked' in key:
+#             continue
+            
+#         if any(buf in key for buf in ['running_mean', 'running_var']):
+#             if average_bn_buffers:
+#                 avg_model[key] = torch.stack([m[key] for m in model_list]).mean(0)
+#             continue
+            
+#         avg_model[key] = torch.stack([m[key] for m in model_list]).mean(0)
+
+#     return avg_model
+
+
+def fedavg(server_model_state_dict, client_updates_dict, average_bn_buffers=True, **kwargs):
     """
     Federated averaging of model parameters.
-    
-    Args:
-        models: Dict or list of model state_dicts
-        average_bn_buffers: Whether to average BatchNorm buffers (running_mean/var)
-                           num_batches_tracked is always taken from first model
-    Returns:
-        Averaged state_dict
     """
-    model_list = list(models.values()) if isinstance(models, dict) else models
-    avg_model = deepcopy(model_list[0])
+    print("\n[DEBUG] Entered fedavg()")
+    
+    # Print types of inputs
+    print(f"[DEBUG] server_model_state_dict type: {type(server_model_state_dict)}")
+    print(f"[DEBUG] client_updates_dict type: {type(client_updates_dict)}")
+    
+    # Print a few keys of the server model
+    if isinstance(server_model_state_dict, dict):
+        print(f"[DEBUG] server_model_state_dict keys (sample): {list(server_model_state_dict.keys())[:3]}")
+    
+    # Print client_updates_dict summary
+    if isinstance(client_updates_dict, dict):
+        print(f"[DEBUG] Number of clients: {len(client_updates_dict)}")
+        first_client = next(iter(client_updates_dict))
+        print(f"[DEBUG] First client ID: {first_client}")
+        print(f"[DEBUG] First client update type: {type(client_updates_dict[first_client])}")
+        print(f"[DEBUG] First client update keys (sample): {list(client_updates_dict[first_client].keys())[:3]}")
+    else:
+        print("[ERROR] client_updates_dict is not a dict!")
 
-    # Process all parameters except num_batches_tracked
-    for key in avg_model:
+    # Turn updates into a list
+    model_list = list(client_updates_dict.values())
+    
+    # Check what's inside model_list
+    if not model_list:
+        raise ValueError("[ERROR] model_list is empty!")
+
+    if not isinstance(model_list[0], dict):
+        raise TypeError(f"[ERROR] Expected model_list[0] to be a dict, got {type(model_list[0])}")
+
+    # Start aggregation
+    avg_model = {}
+
+    for key in model_list[0].keys():
         if 'num_batches_tracked' in key:
-            continue
-            
-        if any(buf in key for buf in ['running_mean', 'running_var']):
+            avg_model[key] = model_list[0][key].clone()
+        elif any(buf in key for buf in ['running_mean', 'running_var']):
             if average_bn_buffers:
                 avg_model[key] = torch.stack([m[key] for m in model_list]).mean(0)
-            continue
-            
-        avg_model[key] = torch.stack([m[key] for m in model_list]).mean(0)
+        else:
+            avg_model[key] = torch.stack([m[key] for m in model_list]).mean(0)
 
+    print("[DEBUG] Aggregation complete. Returning averaged model.")
     return avg_model
 
 
-def trimmed_mean(model_dict, m):
+
+def trimmed_mean(server_model_state_dict, client_updates_dict, m, **kwargs):
     new_weights = dict()
-    client_ids = list(model_dict.keys())
+    client_ids = list(client_updates_dict.keys())
 
     with torch.no_grad():
-        for layer_name, param in model_dict[client_ids[0]].items():
+        for layer_name, param in client_updates_dict[client_ids[0]].items():
             size = param.size()
             layer_weights = []
             for client_id in client_ids:
-                layer_weight = model_dict[client_id][layer_name]
+                layer_weight = client_updates_dict[client_id][layer_name]
                 layer_weights.append(torch.flatten(layer_weight))
 
             t = torch.stack(layer_weights)

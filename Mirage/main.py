@@ -80,10 +80,13 @@ if __name__ == "__main__":
     benign_client = BenignClient(params_loaded, dataloader.train_dataloader, dataloader.test_dataloader)
 
     if params_loaded["malicious_train_algo"] == "Mirage":
-        malicious_client = MirageClient(params_loaded, dataloader.train_dataloader, dataloader.test_dataloader)
-
+        malicious_client = MirageClient(params_loaded, 
+                                        dataloader.train_dataloader, 
+                                        dataloader.test_dataloader)
     else:
-        malicious_client = MaliciousClient(params_loaded, dataloader.train_dataloader, dataloader.test_dataloader)
+        malicious_client = MaliciousClient(params_loaded, 
+                                           dataloader.train_dataloader, 
+                                           dataloader.test_dataloader)
 
 
     prev_asr_before = None  # Stores ASR before aggregation from previous round
@@ -117,6 +120,7 @@ if __name__ == "__main__":
         )
 
         # === Step 3: Aggregate model
+        print(f"[DEBUG] Global model keys: {list(server.global_model.state_dict().keys())}")
         server.aggregation(agg_method=params_loaded["agg_method"],
                            weight_accumulator_by_client=weight_accumulator_by_client)
         

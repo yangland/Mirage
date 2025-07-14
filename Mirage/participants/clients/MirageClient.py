@@ -7,7 +7,6 @@ from matplotlib import pyplot as plt
 from torch import nn
 import numpy as np
 from tqdm import tqdm
-import ot
 from participants.clients.BasicClient import BasicClient
 from utils.utils import poisoned_batch_injection
 from utils.visualize import visualize, visualize_batch, visualize_tsne
@@ -261,6 +260,7 @@ class MirageClient(BasicClient):
         Modified local training with region-constrained backdoor crafting (PGD).
         Also computes ASR before upload.
         """
+        device = self.params["run_device"]
         global_model = copy.deepcopy(model)
         cache_model = copy.deepcopy(model)
         cache_model.train()
@@ -343,9 +343,11 @@ class MirageClient(BasicClient):
                         continue
 
                     # Apply trigger
+                    inputs = inputs.to(device)
+                    mask_ = mask_.to(device)
+                    trigger_ = trigger_.to(device)
                     inputs = (1 - mask_) * inputs + mask_ * trigger_
-                    inputs = inputs.to(self.params["run_device"])
-                    labels_poisoned = torch.full_like(labels, target_label).to(self.params["run_device"])
+                    labels_poisoned = torch.full_like(labels, target_label).to(device)
 
                     outputs = cache_model(inputs)
                     preds = outputs.argmax(dim=1)

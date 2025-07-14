@@ -1,7 +1,8 @@
 # vanilla attack with pixel block trigger no defense yaml
-
-resumed_model: saved_models/ResNet_18_cifar10_ptm_2000_benign.pt
-data_dir:   /home/miles/data
+run_device: cuda:1
+resumed_model: saved_models/ResNet18_cifar10_ptm_2000_benign.pt
+data_dir:   ./data
+dataset: cifar10
 load_data_from_pkl: False
 pre_cache_data_path: data/pre_cached_data.pt.tar
 save_on_iteration : [2010,2020,2030,2040,2050,2060,2070,2080,2090,2100,2150,2200,2250,2300,2350,2400,2450,3000]
@@ -49,7 +50,7 @@ fix_nc_bound: True
 nc_bound: 2
 
 ### Server Setting
-agg_method: FedProx
+agg_method: FedAvg
 Fedprox_mu: 0 #0.5
 
 

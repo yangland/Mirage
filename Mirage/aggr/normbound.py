@@ -1,12 +1,12 @@
 import torch
 from numpy import median
 
-def normbound_aggr(server_sd, clients_grad_dict):
-    server_weight = flat_dict(server_sd)
+def normbound_aggr(server_model_state_dict, clients_grad_dict, **kwargs):
+    server_weight = flat_dict(server_model_state_dict)
     updates = []
     for client_id, client_model_sd in clients_grad_dict.items():
         new_model_i = []
-        for name in server_sd:
+        for name in server_model_state_dict:
             new_model_i.append(torch.flatten(client_model_sd[name].detach()))
         new_model_i = torch.cat(new_model_i)
         assert new_model_i.size() == server_weight.size(), "Mismatch in model size"

@@ -82,6 +82,7 @@ class \
         else:
             self.params["start_iteration"] = 1
             logger.info(f"start training from the 1st round")
+            
     def select_clients(self, iteration):
         r"""
         randomly select participating clients for each round
@@ -268,9 +269,9 @@ class \
     def create_weight_accumulator(self):
         weight_accumulator = dict()
         for name, data in self.global_model.state_dict().items():
-            ### don't scale tied weights:
-            if name == 'decoder.weight' or '__' in name:
-                continue
+            ### don't scale tied weights, Now use the full state_dict
+            # if name == 'decoder.weight' or '__' in name:
+            #     continue
             weight_accumulator[name] = torch.zeros_like(data)
         return weight_accumulator
 

@@ -4,18 +4,18 @@ from aggr.fedavg_median import fedavg
 import math
 from copy import deepcopy
 
-def krum_aggr(model_dict, f, m):
-    client_ids = list(model_dict.keys())
+def krum_aggr(server_model_state_dict, client_updates_dict, f, m, **kwargs):
+    client_ids = list(client_updates_dict.keys())
     reveled_model_dict = {}
     
     for client_id in client_ids:
-        reveled_model_dict[client_id] = modelsd2tensor(model_dict[client_id])
+        reveled_model_dict[client_id] = modelsd2tensor(client_updates_dict[client_id])
 
     selected_clients_with_scores, krum_clients, client_weights = \
         krum(reveled_model_dict, f, m)
     
     krum_clients.sort()
-    krum_model_dict = dict((client_id, model_dict[client_id]) for client_id in krum_clients)
+    krum_model_dict = dict((client_id, client_updates_dict[client_id]) for client_id in krum_clients)
     new_weights = average_tensor_dict(krum_model_dict)
     
     return new_weights, krum_clients, selected_clients_with_scores

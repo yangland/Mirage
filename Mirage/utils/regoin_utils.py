@@ -84,12 +84,17 @@ def compute_benign_statistics(benign_models, server_model):
     assert M > 1, "Need at least 2 clients for statistics"
 
     # Compute average benign model (θ̄_b)
-    avg_benign_state = defaultdict(lambda: 0)
-    for model in benign_models:
-        for name, param in model.state_dict().items():
-            avg_benign_state[name] += param.clone()
-    for name in avg_benign_state:
-        avg_benign_state[name] /= M
+    avg_benign_state = {}
+    for name in benign_models[0].state_dict().keys():
+        # Use float32 for accumulation
+        avg_tensor = benign_models[0].state_dict()[name].float().clone()
+        for model in benign_models[1:]:
+            avg_tensor += model.state_dict()[name].float()
+        avg_tensor /= M
+
+        # Cast back to original dtype
+        original_dtype = benign_models[0].state_dict()[name].dtype
+        avg_benign_state[name] = avg_tensor.to(dtype=original_dtype)
 
     # Create dummy model with avg weights
     avg_model = deepcopy(benign_models[0])
@@ -151,6 +156,7 @@ def project_model_into_region(model, server_model, region_constraints):
 def is_within_l2_ball(model, benign_model, l2_radius):
     return compute_model_distance(model, benign_model) <= l2_radius
 
+
 def is_within_update_cone(model, server_model, avg_benign_model, update_cone_angle):
     theta_t = flatten_model(server_model)
     theta = flatten_model(model)
@@ -158,6 +164,7 @@ def is_within_update_cone(model, server_model, avg_benign_model, update_cone_ang
     delta = theta - theta_t
     cos_dist = 1 - F.cosine_similarity(delta.unsqueeze(0), delta_b.unsqueeze(0)).item()
     return cos_dist <= update_cone_angle
+
 
 def is_within_weight_cone(model, avg_benign_model, weight_cone_angle):
     theta = flatten_model(model)
