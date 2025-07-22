@@ -60,16 +60,19 @@ def build_region_constraints(stats):
         in_weight = (region_id >> 2) & 1
 
         region_constraints = {
+            "region_id": region_id,  # ✅ Add this line for loss selection
             "apply_l2": bool(in_l2),
             "apply_update_cone": bool(in_update),
             "apply_weight_cone": bool(in_weight),
-            "center": stats["avg_benign_model"],  # common in all
+            "center": stats["avg_benign_model"],  # θ̄_b
             "l2_radius": stats["l2_radius"] if in_l2 else None,
             "update_cone_angle": stats["update_cone_angle"] if in_update else None,
             "weight_cone_angle": stats["weight_cone_angle"] if in_weight else None,
         }
         constraints[region_id] = region_constraints
+
     return constraints
+
 
 
 def compute_benign_statistics(benign_models, server_model):
@@ -151,6 +154,26 @@ def project_model_into_region(model, server_model, region_constraints):
     # in PGD step instead of projection.
 
     return unflatten_model(theta, model)
+
+
+def compute_geo_loss(delta_theta, theta, global_model, avg_benign_model, region_id):
+    if region_id == 1:  # 𝓧₁: No geo loss
+        return 0.0
+
+    elif region_id == 2:  # 𝓧₂: Update cone
+        delta_b = flatten_model(avg_benign_model) - flatten_model(global_model)
+        cos_sim = F.cosine_similarity(delta_theta.unsqueeze(0), delta_b.unsqueeze(0)).item()
+        return -cos_sim
+
+    elif region_id == 4:  # 𝓧₃: Weight cone
+        theta_b = flatten_model(avg_benign_model)
+        theta_new = flatten_model(theta)
+        delta = theta_new - theta_b
+        cos_sim = F.cosine_similarity(delta.unsqueeze(0), theta_b.unsqueeze(0)).item()
+        return -cos_sim
+
+    else:  # 𝓧₄ or others
+        return 0.0
 
 
 def is_within_l2_ball(model, benign_model, l2_radius):

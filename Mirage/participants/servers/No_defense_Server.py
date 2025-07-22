@@ -105,12 +105,15 @@ class No_defense_Server(BasicServer):
         # === Step 3: Assign region IDs to malicious clients ===
         region_assignments = {}
         malicious_clients_this_round = [cid for cid in selected_clients_list if cid in malicious_clients_list]
-        possible_region_ids = list(region_constraints.keys())
+        # possible_region_ids = list(region_constraints.keys())
+        possible_region_ids = [1, 2, 4] 
 
         region_pool = itertools.cycle(possible_region_ids)
         for client_id in malicious_clients_this_round:
-            # region_assignments[client_id] = random.choice(possible_region_ids)
-            region_assignments[client_id] = next(region_pool)
+            region_id = next(region_pool)
+            region_assignments[client_id] = region_id
+            logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id}")
+
 
         # === Step 4: Train clients ===
         for client_id in tqdm(selected_clients_list):
@@ -141,6 +144,8 @@ class No_defense_Server(BasicServer):
             weight_accumulator, single_wa = update_weight_accumulator(
                 updated_model, copy.deepcopy(self.global_model), weight_accumulator
             )
+            if not isinstance(single_wa, dict):
+                print(f"[ERROR] Client {client_id} returned non-dict update: {type(single_wa)}")
             weight_accumulator_by_client[client_id] = single_wa
             
             if isinstance(single_wa, dict):

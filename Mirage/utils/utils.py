@@ -126,7 +126,7 @@ def model_dist_norm(model, target_params):
     return math.sqrt(squared_sum)
 
 
-def update_weight_accumulator(model, global_model, weight_accumulator, weight = 1.0):
+def update_weight_accumulator_old(model, global_model, weight_accumulator, weight = 1.0):
     '''
     计算模型更新的梯度，并累加到weight_accumulator中
 
@@ -145,6 +145,40 @@ def update_weight_accumulator(model, global_model, weight_accumulator, weight = 
             if single_weight_accumulator[name].dtype == torch.int64:
                 weight_accumulator[name].add_((data - global_model.state_dict()[name]))
     return weight_accumulator, single_weight_accumulator
+
+
+def update_weight_accumulator(model, global_model, weight_accumulator, weight=1.0):
+    '''
+    Compute model updates and accumulate them into weight_accumulator.
+
+    Keeps all entries in the state_dict, including int and float tensors.
+
+    Returns:
+        - weight_accumulator (updated global accumulator)
+        - single_weight_accumulator (per-client update)
+    '''
+    single_weight_accumulator = dict()
+    model_state = model.state_dict()
+    global_state = global_model.state_dict()
+
+    for name, data in model_state.items():
+        global_data = global_state[name]
+        delta = data - global_data
+        single_weight_accumulator[name] = delta.clone()
+
+        # Initialize accumulator entry if missing
+        if name not in weight_accumulator:
+            weight_accumulator[name] = torch.zeros_like(data)
+
+        try:
+            weight_accumulator[name] += delta * weight
+        except RuntimeError as e:
+            # Handle type mismatch (e.g., Long vs Float)
+            delta_scaled = (delta * weight).to(weight_accumulator[name].dtype)
+            weight_accumulator[name] += delta_scaled
+
+    return weight_accumulator, single_weight_accumulator
+
 
 
 def evaluate_asr_before_aggregation(server, malicious_models_by_id, region_assignments, malicious_client, params):

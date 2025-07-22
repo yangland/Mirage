@@ -9,8 +9,8 @@ import numpy as np
 from tqdm import tqdm
 from participants.clients.BasicClient import BasicClient
 from utils.utils import poisoned_batch_injection
+from utils.regoin_utils import flatten_model, unflatten_model, compute_geo_loss, project_model_into_region
 from utils.visualize import visualize, visualize_batch, visualize_tsne
-from utils.regoin_utils import compute_benign_statistics, is_within_l2_ball, is_within_update_cone, is_within_weight_cone, flatten_model, unflatten_model
 import torch.nn.functional as F
 
 logger = logging.getLogger("logger")
@@ -255,111 +255,85 @@ class MirageClient(BasicClient):
         return cache_model
 
 
-    def local_train(self, iteration, model, train_loader, client_id, test_loader=None, region_constraint=None):
-        """
-        Modified local training with region-constrained backdoor crafting (PGD).
-        Also computes ASR before upload.
-        """
-        device = self.params["run_device"]
-        global_model = copy.deepcopy(model)
-        cache_model = copy.deepcopy(model)
-        cache_model.train()
+def local_train(self, iteration, model, train_loader, client_id, test_loader=None, region_constraint=None):
+    device = self.params["run_device"]
+    global_model = copy.deepcopy(model)
+    cache_model = copy.deepcopy(model)
 
-        optimizer = torch.optim.SGD(cache_model.parameters(), lr=self.params['poisoned_lr'],
-                                    momentum=self.params['poisoned_momentum'],
-                                    weight_decay=self.params['poisoned_weight_decay'])
+    optimizer = torch.optim.SGD(cache_model.parameters(), lr=self.params['poisoned_lr'],
+                                momentum=self.params['poisoned_momentum'],
+                                weight_decay=self.params['poisoned_weight_decay'])
 
-        # === Step 1: Optimize the trigger ===
-        trigger_ = self.search_trigger(cache_model, train_loader, client_id)
-        self.trigger_set[client_id] = trigger_
+    # === Step 1: Optimize the trigger ===
+    trigger_ = self.search_trigger(cache_model, train_loader, client_id)
+    self.trigger_set[client_id] = trigger_
+    mask_ = self.mask_set[client_id]
+    target_label = self.params["poison_label_swap"][client_id]
 
-        mask_ = self.mask_set[client_id]
-        target_label = self.params["poison_label_swap"][client_id]
-        ce_loss = nn.CrossEntropyLoss().to(self.params["run_device"])
+    ce_loss = nn.CrossEntropyLoss().to(device)
 
-        # === Step 2: Train local model with trigger & region constraint ===
-        for epoch in range(self.params["poisoned_retrain_no_times"]):
-            for batch_idx, batch in enumerate(train_loader):
-                inputs, labels = poisoned_batch_injection(
-                    batch,
-                    trigger=self.trigger_set[client_id],
-                    mask=self.mask_set[client_id],
-                    is_eval=False,
-                    label_swap=target_label
-                )
+    # === Step 2: PGD Optimization with Region-aware Projection ===
+    region_id = region_constraint.get("region_id", 0)
+    avg_benign_model = region_constraint.get("center", global_model)
 
-                inputs, labels = inputs.to(self.params["run_device"]), labels.to(self.params["run_device"])
+    for epoch in range(self.params["poisoned_retrain_no_times"]):
+        for batch_idx, batch in enumerate(train_loader):
+            inputs, labels = poisoned_batch_injection(
+                batch,
+                trigger=self.trigger_set[client_id],
+                mask=self.mask_set[client_id],
+                is_eval=False,
+                label_swap=target_label
+            )
+            inputs, labels = inputs.to(device), labels.to(device)
 
-                outputs = cache_model(inputs)
-                loss = ce_loss(outputs, labels)
+            optimizer.zero_grad()
+            outputs = cache_model(inputs)
+            base_loss = ce_loss(outputs, labels)
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+            # === Compute Δθ and geometric loss ===
+            delta_theta = flatten_model(cache_model) - flatten_model(global_model)
+            geo_loss = compute_geo_loss(
+                delta_theta=delta_theta,
+                theta=cache_model,
+                global_model=global_model,
+                avg_benign_model=avg_benign_model,
+                region_id=region_id
+            )
 
-                # === Step 3: Project model back into region ℛ_j ===
-                delta = flatten_model(cache_model) - flatten_model(global_model)
+            total_loss = base_loss + self.params.get("lambda_geo", 1.0) * geo_loss
+            total_loss.backward()
+            optimizer.step()
 
-                # Get projection direction v_j and constraints
-                v_j = region_constraint.get("direction")  # axis vector
-                tau_j = region_constraint.get("cosine_threshold")
-                r_min = region_constraint.get("r_min")
-                r_max = region_constraint.get("r_max")
+            # === Project back into region ===
+            # Optional: clip into L2 ball
+            if region_constraint.get("apply_l2"):
+                proj_model = project_model_into_region(cache_model, global_model, region_constraint)
+                cache_model = proj_model
 
-                # Project Δ onto norm bounds
-                norm = torch.norm(delta, p=2)
-                if r_max is not None and norm > r_max:
-                    delta = delta / norm * r_max
-                elif r_min is not None and norm < r_min:
-                    delta = delta / norm * r_min
+    # === Step 3: Evaluate ASR ===
+    asr = None
+    if test_loader:
+        cache_model.eval()
+        total_correct = 0
+        total = 0
+        with torch.no_grad():
+            for inputs, labels in test_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                sample_indices = ~(labels == target_label)
+                inputs = inputs[sample_indices]
+                labels = labels[sample_indices]
+                if len(inputs) == 0:
+                    continue
+                inputs = (1 - mask_) * inputs + mask_ * trigger_
+                labels_poisoned = torch.full_like(labels, target_label).to(device)
+                preds = cache_model(inputs).argmax(dim=1)
+                total_correct += (preds == labels_poisoned).sum().item()
+                total += inputs.size(0)
+        asr = total_correct / total if total > 0 else 0.0
+        self.asr_before_upload[client_id] = asr
+        logger.info(f"[Iteration {iteration}] Client {client_id} assigned region {region_id} — ASR: {asr:.4f}")
 
-                # Project Δ to satisfy cosine constraint
-                if v_j is not None and tau_j is not None:
-                    cos_sim = F.cosine_similarity(delta.unsqueeze(0), v_j.unsqueeze(0)).item()
-                    if cos_sim < tau_j:
-                        v_j_norm = v_j / torch.norm(v_j, p=2)
-                        delta = tau_j * torch.norm(delta, p=2) * v_j_norm
+    return cache_model
 
-                # Update model: θᵢ = θᵗ + Δ
-                new_flat = flatten_model(global_model) + delta
-                cache_model = unflatten_model(new_flat, global_model)
-                cache_model.train()
-
-        # === Step 4: Evaluate ASR before upload ===
-        asr = None
-        if test_loader is not None:
-            cache_model.eval()
-            total_correct = 0
-            total = 0
-
-            with torch.no_grad():
-                for inputs, labels in test_loader:
-                    # Only use samples not already with target label
-                    sample_indices = ~(labels == target_label)
-                    inputs = inputs[sample_indices]
-                    labels = labels[sample_indices]
-
-                    if len(inputs) == 0:
-                        continue
-
-                    # Apply trigger
-                    inputs = inputs.to(device)
-                    mask_ = mask_.to(device)
-                    trigger_ = trigger_.to(device)
-                    inputs = (1 - mask_) * inputs + mask_ * trigger_
-                    labels_poisoned = torch.full_like(labels, target_label).to(device)
-
-                    outputs = cache_model(inputs)
-                    preds = outputs.argmax(dim=1)
-
-                    total_correct += (preds == labels_poisoned).sum().item()
-                    total += inputs.size(0)
-
-            asr = total_correct / total if total > 0 else 0.0
-            self.asr_before_upload[client_id] = asr
-            logger.info(f"[Iteration {iteration}] Client {client_id} ASR before upload: {asr:.4f}")
-        else:
-            self.asr_before_upload[client_id] = None  # fallback if test_loader is missing
-
-        return cache_model
 
