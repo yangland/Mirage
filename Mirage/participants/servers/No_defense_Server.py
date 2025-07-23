@@ -104,8 +104,8 @@ class No_defense_Server(BasicServer):
         # === Step 2: Compute region statistics and constraints ===
         region_constraints = None
         if len(benign_models_from_malicious) > 1:
-            stats = compute_benign_statistics(benign_models_from_malicious, global_model)
-            region_constraints = build_region_constraints(stats)
+            region_stats = compute_benign_statistics(benign_models_from_malicious, global_model)
+            # region_constraints = build_region_constraints(region_stats)
         else:
             logger.warning("Not enough benign-like models to compute region statistics.")
             region_constraints = {i: {} for i in range(8)}  # fallback
@@ -125,11 +125,10 @@ class No_defense_Server(BasicServer):
             if client_id in malicious_clients_list:
                 # Get region constraint
                 region_id = region_assignments.get(client_id)
-                constraint = region_constraints[region_id]
                 updated_model = malicious_client.local_train(
                     iteration, local_model, client_train_data, client_id,
                     test_loader=self.test_dataloader,
-                    region_constraint=constraint
+                    region_stat=region_stats
                 )
             else:
                 updated_model = benign_client.local_train(

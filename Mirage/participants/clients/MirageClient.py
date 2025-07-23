@@ -255,7 +255,7 @@ class MirageClient(BasicClient):
         return cache_model
 
 
-    def local_train(self, iteration, model, train_loader, client_id, test_loader=None, region_constraint=None):
+    def local_train(self, iteration, model, train_loader, client_id, test_loader=None, region_stats=None):
         device = self.params["run_device"]
         global_model = copy.deepcopy(model)
         cache_model = copy.deepcopy(model)
@@ -273,8 +273,8 @@ class MirageClient(BasicClient):
         ce_loss = nn.CrossEntropyLoss().to(device)
 
         # === Step 2: PGD Optimization with Region-aware Projection ===
-        region_id = region_constraint.get("region_id", 0)
-        avg_benign_model = region_constraint.get("avg_benign_weight", global_model)
+        region_id = region_stats.get("region_id", 0)
+        avg_benign_model = region_stats.get("avg_benign_weight", global_model)
 
         for epoch in range(self.params["poisoned_retrain_no_times"]):
             for batch_idx, batch in enumerate(train_loader):
@@ -318,7 +318,7 @@ class MirageClient(BasicClient):
                 proj_model = project_model_into_region(
                     model=cache_model,
                     center_model=avg_benign_model,  # ✅ Correct center
-                    radius=region_constraint["l2_radius"] * self.params.get("l2_radius_scale", 1.5)
+                    radius=region_stats["avg_L2_norm"] * self.params.get("l2_radius_scale", 1.5)
                 )
                 
                 cache_model = proj_model

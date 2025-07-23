@@ -48,89 +48,95 @@ def get_region_id(in_l2, in_update_cone, in_weight_cone):
     return (in_weight_cone << 2) | (in_update_cone << 1) | in_l2
 
 
-def build_region_constraints(stats):
-    """
-    Given benign statistics, return constraint dicts for all 8 regions.
-    Each region ID maps to a dict of constraints.
-    """
-    constraints = {}
-    for region_id in range(8):
-        in_l2 = region_id & 1
-        in_update = (region_id >> 1) & 1
-        in_weight = (region_id >> 2) & 1
+# def build_region_constraints(stats):
+#     """
+#     Given benign statistics, return constraint dicts for all 8 regions.
+#     Each region ID maps to a dict of constraints.
+#     """
+#     constraints = {}
+#     for region_id in range(8):
+#         in_l2 = region_id & 1
+#         in_update = (region_id >> 1) & 1
+#         in_weight = (region_id >> 2) & 1
 
-        region_constraints = {
-            "region_id": region_id,  # ✅ Add this line for loss selection
-            "apply_l2": bool(in_l2),
-            "apply_update_cone": bool(in_update),
-            "apply_weight_cone": bool(in_weight),
-            "avg_benign_weight": stats["avg_benign_model"],  # θ̄_b
-            "l2_radius": stats["l2_radius"] if in_l2 else None,
-            "update_cone_angle": stats["update_cone_angle"] if in_update else None,
-            "weight_cone_angle": stats["weight_cone_angle"] if in_weight else None,
-        }
-        constraints[region_id] = region_constraints
+#         region_constraints = {
+#             "region_id": region_id,  # ✅ Add this line for loss selection
+#             "apply_l2": bool(in_l2),
+#             "apply_update_cone": bool(in_update),
+#             "apply_weight_cone": bool(in_weight),
+#             "avg_benign_weight": stats["avg_benign_model"],  # θ̄_b
+#             "l2_radius": stats["l2_radius"],
+#             "update_cone_angle": stats["update_cone_angle"] if in_update else None,
+#             "weight_cone_angle": stats["weight_cone_angle"] if in_weight else None,
+#         }
+#         constraints[region_id] = region_constraints
 
-    return constraints
+#     return constraints
 
 
 
 def compute_benign_statistics(benign_models, server_model):
     """
     Computes:
-    - avg_benign_model
-    - avg L2 distance
-    - avg update cosine distance
-    - avg weight cosine distance
+    - avg_benign_model: θ̄_b
+    - avg_L2_dist: average pairwise L2 distance between benign models
+    - avg_L2_norm: average norm of model updates from server
+    - avg_update_cone_angle: average cosine angle between benign updates
+    - avg_weight_cone_angle: average cosine angle between benign model weights
     """
     M = len(benign_models)
     assert M > 1, "Need at least 2 clients for statistics"
 
-    # Compute average benign model (θ̄_b)
+    # === Compute average benign model (θ̄_b) ===
     avg_benign_state = {}
     for name in benign_models[0].state_dict().keys():
-        # Use float32 for accumulation
         avg_tensor = benign_models[0].state_dict()[name].float().clone()
         for model in benign_models[1:]:
             avg_tensor += model.state_dict()[name].float()
         avg_tensor /= M
+        avg_benign_state[name] = avg_tensor.to(dtype=benign_models[0].state_dict()[name].dtype)
 
-        # Cast back to original dtype
-        original_dtype = benign_models[0].state_dict()[name].dtype
-        avg_benign_state[name] = avg_tensor.to(dtype=original_dtype)
-
-    # Create dummy model with avg weights
+    # Create model with avg weights
     avg_model = deepcopy(benign_models[0])
     avg_model.load_state_dict(avg_benign_state)
 
-    # Compute distances
+    # === Compute statistics ===
     update_dists = []
     weight_dists = []
     l2_dists = []
+    l2_norms = []
 
     for i in range(M):
-        for j in range(i + 1, M):
-            model_i, model_j = benign_models[i], benign_models[j]
+        model_i = benign_models[i]
 
-            # L2 distance
+        # L2 norm from server model (‖Δθ_i‖)
+        delta_i = flatten_model(model_i) - flatten_model(server_model)
+        l2_norms.append(torch.norm(delta_i, p=2).item())
+
+        for j in range(i + 1, M):
+            model_j = benign_models[j]
+
+            # Pairwise L2 distance (‖θ_i - θ_j‖)
             l2_dists.append(compute_model_distance(model_i, model_j))
 
-            # Update direction
-            delta_i = flatten_model(model_i) - flatten_model(server_model)
+            # Update cone: cos angle between Δθ_i and Δθ_j
             delta_j = flatten_model(model_j) - flatten_model(server_model)
-            update_dists.append(1 - F.cosine_similarity(delta_i.unsqueeze(0), delta_j.unsqueeze(0)).item())
+            cos_sim = F.cosine_similarity(delta_i.unsqueeze(0), delta_j.unsqueeze(0)).item()
+            update_dists.append(1 - cos_sim)
 
-            # Weight direction
+            # Weight cone: cos angle between θ_i and θ_j
             weight_dists.append(cosine_distance(model_i, model_j))
 
     stat = {
         "avg_benign_model": avg_model,
-        "l2_radius": np.mean(l2_dists),
-        "update_cone_angle": np.mean(update_dists),
-        "weight_cone_angle": np.mean(weight_dists),
+        "avg_L2_dist": np.mean(l2_dists),
+        "avg_L2_norm": np.mean(l2_norms),
+        "avg_update_cone_angle": np.mean(update_dists),
+        "avg_weight_cone_angle": np.mean(weight_dists),
     }
 
     return stat
+
 
 def project_model_into_region(model, center_model, radius):
     """
