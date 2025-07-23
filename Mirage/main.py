@@ -17,7 +17,7 @@ from participants.clients.MalicilousClient import MaliciousClient
 from participants.clients.MirageClient import MirageClient
 from participants.servers.No_defense_Server import No_defense_Server
 
-from utils.utils import args_update, model_dist_norm_var, poisoned_batch_injection, evaluate_asr_before_aggregation, evaluate_asr_after_aggregation
+from utils.utils import args_update, assign_regions_to_malicious, evaluate_asr_before_aggregation, evaluate_asr_after_aggregation
 from utils.visualize import visualize_batch
 from utils.backdoor_survival_tracker import BackdoorSurvivalTracker
 tracker = BackdoorSurvivalTracker(save_dir="results/backdoor_tracking")
@@ -87,59 +87,66 @@ if __name__ == "__main__":
         malicious_client = MaliciousClient(params_loaded, 
                                            dataloader.train_dataloader, 
                                            dataloader.test_dataloader)
+        
+    print(f"[DEBUG] Type of malicious_client: {type(malicious_client)}")
 
-
-    prev_asr_before = None  # Stores ASR before aggregation from previous round
-
+    all_malicious_clients_ids = [malicious_client for _ in range(params_loaded["no_of_adversaries"])]
+    
     for iteration in range(server.params["start_iteration"], server.params["end_iteration"]):
         logger.info(f"====================== Current Round: {iteration} ======================")
 
-        # === Step 1: Evaluate ASR of server model BEFORE crafting new attacks (i.e., survival from last round)
-        if prev_asr_before is not None:
-            avg_asr_after = evaluate_asr_after_aggregation(
-                server=server,
-                region_assignments=region_assignments,
-                malicious_client=malicious_client,
-                params=params_loaded
-            )
-            tracker.log_iteration(iteration, prev_asr_before, avg_asr_after)
+        # === Step 1: Preprocess + client uploads
+        server.pre_process(test_data=server.test_dataloader, iteration=iteration)
+        
+        # === Step 2: Select clients
+        selected_clients, selected_malicious_clients = server.select_clients(iteration)
 
-        # === Step 2: Preprocess + client uploads
+        # === Step 3: Assign region IDs to malicious clients
+        region_assignments = assign_regions_to_malicious(
+            selected_clients_list=selected_clients,
+            malicious_clients_list=selected_malicious_clients,
+            iteration=iteration,
+            possible_region_ids=[1, 2, 4]  # or dynamically from config
+        )
+
+
+        # === Step 4: Preprocess + client uploads
         server.pre_process(test_data=server.test_dataloader, iteration=iteration)
 
         (
             weight_accumulator,
             weight_accumulator_by_client,
             aggregated_model_id,
-            region_assignments,
             malicious_models_by_id
         ) = server.broadcast_upload(
             iteration=iteration,
             benign_client=benign_client,
-            malicious_client=malicious_client
+            malicious_client=malicious_client,
+            selected_clients_list=selected_clients,
+            malicious_clients_list=selected_malicious_clients,
+            region_assignments=region_assignments 
         )
 
-        # === Step 3: Aggregate model
+        # === Step 5: Aggregate model
         print(f"[DEBUG] Global model keys: {list(server.global_model.state_dict().keys())}")
         server.aggregation(agg_method=params_loaded["agg_method"],
                            weight_accumulator_by_client=weight_accumulator_by_client)
         
         logger.info(f"aggregated_model: {aggregated_model_id}")
 
-        # === Step 4: Evaluate global model
-        server.test_global_model(iteration=iteration, malicious_clients=malicious_client)
+        # === Step 6: Evaluate global model
+        global_eval_results = server.test_global_model(iteration=iteration, malicious_clients=malicious_client)
 
-        # === Step 5: Save checkpoint
+        # Log clean accuracy
+        logger.info(f"[Eval] Clean Acc: {global_eval_results['clean_acc'] * 100:.2f}%")
+
+        # Log ASR per attacker
+        for attacker_id, stats in global_eval_results["asr"].items():
+            logger.info(f"[Eval] Attacker {attacker_id} -> ASR: {stats['asr'] * 100:.2f}%, Loss: {stats['loss']:.4f}")
+
+        # === Step 7: Save checkpoint
         server.save_model(iteration, malicious_client.trigger_set, malicious_client.mask_set)
 
-        # === Step 6: Evaluate ASR before aggregation (i.e., attack strength of current round)
-        prev_asr_before = evaluate_asr_before_aggregation(
-            server=server,
-            malicious_models_by_id=malicious_models_by_id,
-            region_assignments=region_assignments,
-            malicious_client=malicious_client,
-            params=params_loaded
-        )
 
 
 # ==================== End of Training ====================

@@ -97,4 +97,4 @@ defense_method: nodefense
 
 # Region Setting
 benign_sample_for_region: 5
-# malicious_region_map: {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 0, 9: 1}
+l2_radius_scale: 1.5

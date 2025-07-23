@@ -64,7 +64,7 @@ def build_region_constraints(stats):
             "apply_l2": bool(in_l2),
             "apply_update_cone": bool(in_update),
             "apply_weight_cone": bool(in_weight),
-            "center": stats["avg_benign_model"],  # θ̄_b
+            "avg_benign_weight": stats["avg_benign_model"],  # θ̄_b
             "l2_radius": stats["l2_radius"] if in_l2 else None,
             "update_cone_angle": stats["update_cone_angle"] if in_update else None,
             "weight_cone_angle": stats["weight_cone_angle"] if in_weight else None,
@@ -132,28 +132,21 @@ def compute_benign_statistics(benign_models, server_model):
 
     return stat
 
-def project_model_into_region(model, server_model, region_constraints):
+def project_model_into_region(model, center_model, radius):
     """
-    Approximate projection of model into constrained region.
-    You can apply clipping if needed in PGD loop.
+    Projects the model into an L2 ball around the given center model.
     """
-    projected_model = deepcopy(model)
-
     theta = flatten_model(model)
-    center = flatten_model(region_constraints["center"])
+    center = flatten_model(center_model)
 
-    # L2 projection
-    if region_constraints["apply_l2"]:
-        diff = theta - center
-        norm = torch.norm(diff, p=2)
-        if norm > region_constraints["l2_radius"]:
-            theta = center + diff / norm * region_constraints["l2_radius"]
+    diff = theta - center
+    norm = torch.norm(diff, p=2)
 
-    # NOTE: Update cone and weight cone projections can be approximated
-    # with gradient filtering or angular clipping — or used as constraints
-    # in PGD step instead of projection.
+    if norm > radius:
+        theta = center + diff / norm * radius
 
     return unflatten_model(theta, model)
+
 
 
 def compute_geo_loss(delta_theta, theta, global_model, avg_benign_model, region_id):
@@ -162,14 +155,25 @@ def compute_geo_loss(delta_theta, theta, global_model, avg_benign_model, region_
 
     elif region_id == 2:  # 𝓧₂: Update cone
         delta_b = flatten_model(avg_benign_model) - flatten_model(global_model)
-        cos_sim = F.cosine_similarity(delta_theta.unsqueeze(0), delta_b.unsqueeze(0)).item()
+        cos_sim = F.cosine_similarity(delta_theta.unsqueeze(0), 
+                                      delta_b.unsqueeze(0), 
+                                      eps=1e-8
+                                      ).item()
         return -cos_sim
 
     elif region_id == 4:  # 𝓧₃: Weight cone
         theta_b = flatten_model(avg_benign_model)
         theta_new = flatten_model(theta)
         delta = theta_new - theta_b
-        cos_sim = F.cosine_similarity(delta.unsqueeze(0), theta_b.unsqueeze(0)).item()
+        
+        if torch.norm(theta_b) == 0 or torch.norm(delta) == 0:
+            print("[WARNING] Zero norm in geo loss for region 4")
+            return 0.0
+        
+        cos_sim = F.cosine_similarity(delta.unsqueeze(0),
+                                      theta_b.unsqueeze(0), 
+                                      eps=1e-8
+                                    ).item()
         return -cos_sim
 
     else:  # 𝓧₄ or others

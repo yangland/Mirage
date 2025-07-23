@@ -118,70 +118,69 @@ class \
 
         return selected_clients, adversary_list
 
-    def test_global_model(self, iteration, malicious_clients):
-        '''
-        clean acc 和 asr
-        :param iteration: current iteration
-        :param malicious_clients: attacker
-        :return: acc -> float, acc_loss -> float, asr_list -> [float, float, float], asr_loss -> [float, float, float]
-        '''
-        acc, acc_loss = self.test_model_once(iteration, self.test_dataloader, is_poisoned=False)
-        logger.info(f"{'-----------------------------------------------':<50}")
-        logger.info(f"|Test Global model in iteration {iteration}")
-        logger.info(f"|Loss {acc_loss:.4f}, Acc {acc * 100:.2f}%")
 
+    def test_global_model(self, iteration, malicious_clients):
+        """
+        Evaluate the global model: clean accuracy and ASR for each attacker.
+        Returns a dictionary with clean accuracy/loss and ASR info.
+        """
+        results = {
+            "clean_acc": None,
+            "clean_loss": None,
+            "asr": {}
+        }
+
+        # === Clean evaluation
+        acc, acc_loss = self.test_model_once(iteration, self.test_dataloader, is_poisoned=False)
+        self.acc_list.append(acc)
+        results["clean_acc"] = acc
+        results["clean_loss"] = acc_loss
+
+        logger.info(f"{'-'*55}")
+        logger.info(f"| Test Global model in iteration {iteration}")
+        logger.info(f"| Loss {acc_loss:.4f}, Acc {acc * 100:.2f}%")
+
+        # === ASR evaluation (if poisoned round)
         if iteration >= self.params["poisoned_start_iteration"]:
             for attacker_id in range(self.params["no_of_adversaries"]):
                 trigger = malicious_clients.trigger_set[attacker_id]
                 mask = malicious_clients.mask_set[attacker_id]
-                asr, loss = self.test_model_once(iteration, self.test_dataloader, is_poisoned=True,
-                                                 trigger=trigger, mask=mask,
-                                                 label_swap=self.params["poison_label_swap"][attacker_id])
+                label_swap = self.params["poison_label_swap"][attacker_id]
+
+                asr, loss = self.test_model_once(
+                    iteration,
+                    self.test_dataloader,
+                    is_poisoned=True,
+                    trigger=trigger,
+                    mask=mask,
+                    label_swap=label_swap
+                )
+
                 self.acc_p_list[attacker_id].append(asr)
                 logger.info(f"| Attacker {attacker_id}: Loss {loss:.4f}, ASR {asr * 100:.2f}%")
 
-        logger.info(f"{'-----------------------------------------------':<50}")
-        self.acc_list.append(acc)
+                results["asr"][attacker_id] = {
+                    "asr": asr,
+                    "loss": loss
+                }
+
+        logger.info(f"{'-'*55}")
+
         if iteration % 50 == 0:
             logger.info(f"acc_list: {self.acc_list}")
             for i in range(self.params["no_of_adversaries"]):
                 logger.info(f"ASR of attacker {i}: {self.acc_p_list[i]}")
 
-        # TODO plot t-sne
+        # Optional: TSNE visualization
         show_tsne = False
         if show_tsne and (iteration % 10 == 0 or (
-                self.params["malicious_train_algo"] == "Mirage" and iteration % 3 == 0 and iteration - self.params[
-            "start_save_iteration"] <= 101)):
-            cache_samples = torch.tensor([])
-            cache_labels = torch.tensor([])
-            # 干净分布
-            copy_model = copy.deepcopy(self.global_model).to(torch.device("cpu"))
-            copy_model.eval()
-            copy_model.linear = torch.nn.Sequential()
-            for ind, (samples, labels) in malicious_clients.test_sample_cache.items():
-                cache_samples = torch.cat((cache_samples, samples), dim=0)
-                cache_labels = torch.cat((cache_labels, labels), dim=0)
-            cache_features = copy_model(cache_samples)
-            indices = torch.randperm(len(cache_samples))
-            for client_id in range(self.params["no_of_adversaries"]):
-                samples = cache_samples[indices][200 * client_id:200 * (client_id + 1)]
-                labels = cache_labels[indices][200 * client_id:200 * (client_id + 1)]
-                poi_inputs, poi_labels = poisoned_batch_injection((samples, labels),
-                                                                  trigger=malicious_clients.trigger_set[client_id],
-                                                                  mask=malicious_clients.mask_set[client_id],
-                                                                  is_eval=True,
-                                                                  label_swap=self.params["poison_label_swap"][
-                                                                      client_id])
+                self.params["malicious_train_algo"] == "Mirage"
+                and iteration % 3 == 0
+                and iteration - self.params["start_save_iteration"] <= 101)):
+            self._visualize_tsne(iteration, malicious_clients)
 
-                poi_inputs = poi_inputs.to(torch.device("cpu"))
-                poi_labels = poi_labels.to(torch.device("cpu"))
+        return results
 
-                features_poi = copy_model(poi_inputs)
-                cache_features = torch.cat((cache_features, features_poi), dim=0)
-                cache_labels = torch.cat((cache_labels, poi_labels + 100), dim=0)
-
-            visualize_tsne(cache_features, cache_labels, iteration, self.params["folder_path"])
-        return
 
     def test_model_once(self, iteration, test_dataloader, is_poisoned=False, model=None, trigger=None, mask=None,
                         label_swap=0):
@@ -310,8 +309,21 @@ class \
         
         # === Convert list of state_dicts to dict[str, state_dict]
         client_grad_dict = {
-            f"client_{i}": update for i, update in enumerate(weight_accumulator_by_client)
+            f"client_{client_id}": update
+            for client_id, update in weight_accumulator_by_client.items()
         }
+
+        # Validate all client updates before aggregation
+        for client_id, update in client_grad_dict.items():
+            if not isinstance(update, dict):
+                print(f"[ERROR] Client {client_id} update is not a dict: {type(update)}")
+                print("update:", update)
+                raise TypeError(f"[ERROR] Invalid update format for client {client_id}")
+            for k, v in update.items():
+                if not isinstance(v, torch.Tensor):
+                    print(f"[ERROR] Client {client_id} update param {k} is not a Tensor: {type(v)}")
+                    raise TypeError(f"[ERROR] Invalid param in update for client {client_id}")
+
 
         # === Call aggregation dispatcher
         aggregated_update = aggregate_global_model(
@@ -321,6 +333,7 @@ class \
             params=self.params,
             iteration=getattr(self, "current_iteration", 0),
         )
+
 
         # === Apply aggregated update to global model
         for name, param in self.global_model.state_dict().items():

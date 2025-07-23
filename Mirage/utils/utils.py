@@ -1,5 +1,6 @@
 import copy
 import datetime
+import itertools
 import logging
 import os
 
@@ -151,7 +152,8 @@ def update_weight_accumulator(model, global_model, weight_accumulator, weight=1.
     '''
     Compute model updates and accumulate them into weight_accumulator.
 
-    Keeps all entries in the state_dict, including int and float tensors.
+    Keeps all entries in the state_dict, including int and float tensors,
+    but skips non-tensor entries to ensure valid accumulation.
 
     Returns:
         - weight_accumulator (updated global accumulator)
@@ -163,22 +165,30 @@ def update_weight_accumulator(model, global_model, weight_accumulator, weight=1.
 
     for name, data in model_state.items():
         global_data = global_state[name]
+
+        # Skip non-tensor parameters
+        if not isinstance(data, torch.Tensor) or not isinstance(global_data, torch.Tensor):
+            print(f"[WARNING] Skipping non-tensor param: {name} (type: {type(data)})")
+            continue
+
         delta = data - global_data
+
+        # Optional: cast to float32 if needed
+        if not torch.is_floating_point(delta):
+            delta = delta.to(torch.float32)
+
         single_weight_accumulator[name] = delta.clone()
 
-        # Initialize accumulator entry if missing
         if name not in weight_accumulator:
-            weight_accumulator[name] = torch.zeros_like(data)
+            weight_accumulator[name] = torch.zeros_like(delta)
 
         try:
             weight_accumulator[name] += delta * weight
-        except RuntimeError as e:
-            # Handle type mismatch (e.g., Long vs Float)
+        except RuntimeError:
             delta_scaled = (delta * weight).to(weight_accumulator[name].dtype)
             weight_accumulator[name] += delta_scaled
 
     return weight_accumulator, single_weight_accumulator
-
 
 
 def evaluate_asr_before_aggregation(server, malicious_models_by_id, region_assignments, malicious_client, params):
@@ -246,3 +256,16 @@ def evaluate_asr_after_aggregation(server, region_assignments, malicious_client,
     }
 
     return avg_asr_after
+
+
+def assign_regions_to_malicious(selected_clients_list, malicious_clients_list, iteration, possible_region_ids=[1, 2, 4]):
+    region_assignments = {}
+    region_pool = itertools.cycle(possible_region_ids)
+    malicious_clients_this_round = [cid for cid in selected_clients_list if cid in malicious_clients_list]
+
+    for client_id in malicious_clients_this_round:
+        region_id = next(region_pool)
+        region_assignments[client_id] = region_id
+        logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id}")
+
+    return region_assignments

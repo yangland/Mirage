@@ -65,10 +65,18 @@ class No_defense_Server(BasicServer):
     #     return weight_accumulator, weight_accumulator_by_client, aggregated_model_id
 
 
-    def broadcast_upload(self, iteration, benign_client, malicious_client, **kwargs):
+    def broadcast_upload(
+        self,
+        iteration,
+        benign_client,
+        malicious_client,
+        selected_clients_list,
+        malicious_clients_list,
+        region_assignments,
+        **kwargs
+        ):
         logger.info(f"Training on global iteration {iteration} ")
 
-        selected_clients_list, malicious_clients_list = self.select_clients(iteration)
         current_no_of_adversaries = sum([1 for client_id in selected_clients_list if client_id in malicious_clients_list])
 
         weight_accumulator = self.create_weight_accumulator()
@@ -102,18 +110,9 @@ class No_defense_Server(BasicServer):
             logger.warning("Not enough benign-like models to compute region statistics.")
             region_constraints = {i: {} for i in range(8)}  # fallback
 
-        # === Step 3: Assign region IDs to malicious clients ===
-        region_assignments = {}
-        malicious_clients_this_round = [cid for cid in selected_clients_list if cid in malicious_clients_list]
-        # possible_region_ids = list(region_constraints.keys())
-        possible_region_ids = [1, 2, 4] 
-
-        region_pool = itertools.cycle(possible_region_ids)
-        for client_id in malicious_clients_this_round:
-            region_id = next(region_pool)
-            region_assignments[client_id] = region_id
-            logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id}")
-
+        # === Step 3: Use externally provided region assignments ===
+        logger.info(f"[Round {iteration}] Using externally provided region assignments: {region_assignments}")
+        logger.info(f"[Round {iteration}] selected_clients_list: {selected_clients_list}")
 
         # === Step 4: Train clients ===
         for client_id in tqdm(selected_clients_list):
@@ -125,7 +124,7 @@ class No_defense_Server(BasicServer):
 
             if client_id in malicious_clients_list:
                 # Get region constraint
-                region_id = region_assignments.get(client_id, 0)
+                region_id = region_assignments.get(client_id)
                 constraint = region_constraints[region_id]
                 updated_model = malicious_client.local_train(
                     iteration, local_model, client_train_data, client_id,
@@ -145,9 +144,18 @@ class No_defense_Server(BasicServer):
                 updated_model, copy.deepcopy(self.global_model), weight_accumulator
             )
             if not isinstance(single_wa, dict):
-                print(f"[ERROR] Client {client_id} returned non-dict update: {type(single_wa)}")
+                print(f"[FATAL] Client {client_id} returned non-dict update: {type(single_wa)}")
+                print(f"single_wa: {single_wa}")
+                raise RuntimeError("Abort: client update is invalid")
             weight_accumulator_by_client[client_id] = single_wa
             
+            if client_id == 0:
+                print("[DEBUG] Checking update flow for client 0")
+                print("Type of updated_model:", type(updated_model))
+                print("Type of global_model:", type(self.global_model))
+                print("State dict keys:", list(updated_model.state_dict().keys())[:5])
+                print("Update norm:", update_norm)
+
             if isinstance(single_wa, dict):
                 print(f"[DEBUG] Client {client_id} update keys: {list(single_wa.keys())[:5]}")
             else:
@@ -161,8 +169,7 @@ class No_defense_Server(BasicServer):
         return (
                 weight_accumulator,
                 weight_accumulator_by_client,
-                aggregated_model_id,
-                region_assignments,               
+                aggregated_model_id,           
                 malicious_client.asr_before_upload  
             )
 

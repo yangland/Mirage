@@ -255,85 +255,97 @@ class MirageClient(BasicClient):
         return cache_model
 
 
-def local_train(self, iteration, model, train_loader, client_id, test_loader=None, region_constraint=None):
-    device = self.params["run_device"]
-    global_model = copy.deepcopy(model)
-    cache_model = copy.deepcopy(model)
+    def local_train(self, iteration, model, train_loader, client_id, test_loader=None, region_constraint=None):
+        device = self.params["run_device"]
+        global_model = copy.deepcopy(model)
+        cache_model = copy.deepcopy(model)
 
-    optimizer = torch.optim.SGD(cache_model.parameters(), lr=self.params['poisoned_lr'],
-                                momentum=self.params['poisoned_momentum'],
-                                weight_decay=self.params['poisoned_weight_decay'])
+        optimizer = torch.optim.SGD(cache_model.parameters(), lr=self.params['poisoned_lr'],
+                                    momentum=self.params['poisoned_momentum'],
+                                    weight_decay=self.params['poisoned_weight_decay'])
 
-    # === Step 1: Optimize the trigger ===
-    trigger_ = self.search_trigger(cache_model, train_loader, client_id)
-    self.trigger_set[client_id] = trigger_
-    mask_ = self.mask_set[client_id]
-    target_label = self.params["poison_label_swap"][client_id]
+        # === Step 1: Optimize the trigger ===
+        trigger_ = self.search_trigger(cache_model, train_loader, client_id)
+        self.trigger_set[client_id] = trigger_
+        mask_ = self.mask_set[client_id]
+        target_label = self.params["poison_label_swap"][client_id]
 
-    ce_loss = nn.CrossEntropyLoss().to(device)
+        ce_loss = nn.CrossEntropyLoss().to(device)
 
-    # === Step 2: PGD Optimization with Region-aware Projection ===
-    region_id = region_constraint.get("region_id", 0)
-    avg_benign_model = region_constraint.get("center", global_model)
+        # === Step 2: PGD Optimization with Region-aware Projection ===
+        region_id = region_constraint.get("region_id", 0)
+        avg_benign_model = region_constraint.get("avg_benign_weight", global_model)
 
-    for epoch in range(self.params["poisoned_retrain_no_times"]):
-        for batch_idx, batch in enumerate(train_loader):
-            inputs, labels = poisoned_batch_injection(
-                batch,
-                trigger=self.trigger_set[client_id],
-                mask=self.mask_set[client_id],
-                is_eval=False,
-                label_swap=target_label
-            )
-            inputs, labels = inputs.to(device), labels.to(device)
+        for epoch in range(self.params["poisoned_retrain_no_times"]):
+            for batch_idx, batch in enumerate(train_loader):
+                inputs, labels = poisoned_batch_injection(
+                    batch,
+                    trigger=self.trigger_set[client_id],
+                    mask=self.mask_set[client_id],
+                    is_eval=False,
+                    label_swap=target_label
+                )
+                inputs, labels = inputs.to(device), labels.to(device)
 
-            optimizer.zero_grad()
-            outputs = cache_model(inputs)
-            base_loss = ce_loss(outputs, labels)
+                optimizer.zero_grad()
+                outputs = cache_model(inputs)
+                base_loss = ce_loss(outputs, labels)
 
-            # === Compute Δθ and geometric loss ===
-            delta_theta = flatten_model(cache_model) - flatten_model(global_model)
-            geo_loss = compute_geo_loss(
-                delta_theta=delta_theta,
-                theta=cache_model,
-                global_model=global_model,
-                avg_benign_model=avg_benign_model,
-                region_id=region_id
-            )
+                # === Compute Δθ after model has received gradient ===
+                delta_theta = flatten_model(cache_model) - flatten_model(global_model)
 
-            total_loss = base_loss + self.params.get("lambda_geo", 1.0) * geo_loss
-            total_loss.backward()
-            optimizer.step()
+                # === Geometric loss based on updated model ===
+                geo_loss = compute_geo_loss(
+                    delta_theta=delta_theta,
+                    theta=cache_model,
+                    global_model=global_model,
+                    avg_benign_model=avg_benign_model,  # 💡 This is now correctly benign model
+                    region_id=region_id
+                )
 
-            # === Project back into region ===
-            # Optional: clip into L2 ball
-            if region_constraint.get("apply_l2"):
-                proj_model = project_model_into_region(cache_model, global_model, region_constraint)
+                total_loss = base_loss + self.params.get("lambda_geo", 1.0) * geo_loss
+
+                if torch.isnan(total_loss):
+                    print(f"[FATAL] Loss is NaN at iteration {iteration}, client {client_id}")
+                    return model  # Early exit with untrained model
+
+                total_loss.backward()
+                optimizer.step()
+
+
+                # === Project back into region ===
+                # Project into L2 ball centered at benign model
+                proj_model = project_model_into_region(
+                    model=cache_model,
+                    center_model=avg_benign_model,  # ✅ Correct center
+                    radius=region_constraint["l2_radius"] * self.params.get("l2_radius_scale", 1.5)
+                )
+                
                 cache_model = proj_model
 
-    # === Step 3: Evaluate ASR ===
-    asr = None
-    if test_loader:
-        cache_model.eval()
-        total_correct = 0
-        total = 0
-        with torch.no_grad():
-            for inputs, labels in test_loader:
-                inputs, labels = inputs.to(device), labels.to(device)
-                sample_indices = ~(labels == target_label)
-                inputs = inputs[sample_indices]
-                labels = labels[sample_indices]
-                if len(inputs) == 0:
-                    continue
-                inputs = (1 - mask_) * inputs + mask_ * trigger_
-                labels_poisoned = torch.full_like(labels, target_label).to(device)
-                preds = cache_model(inputs).argmax(dim=1)
-                total_correct += (preds == labels_poisoned).sum().item()
-                total += inputs.size(0)
-        asr = total_correct / total if total > 0 else 0.0
-        self.asr_before_upload[client_id] = asr
-        logger.info(f"[Iteration {iteration}] Client {client_id} assigned region {region_id} — ASR: {asr:.4f}")
+        # === Step 3: Evaluate ASR ===
+        asr = None
+        if test_loader:
+            cache_model.eval()
+            total_correct = 0
+            total = 0
+            with torch.no_grad():
+                for inputs, labels in test_loader:
+                    inputs, labels = inputs.to(device), labels.to(device)
+                    sample_indices = ~(labels == target_label)
+                    inputs = inputs[sample_indices]
+                    labels = labels[sample_indices]
+                    if len(inputs) == 0:
+                        continue
+                    inputs = (1 - mask_) * inputs + mask_ * trigger_
+                    labels_poisoned = torch.full_like(labels, target_label).to(device)
+                    preds = cache_model(inputs).argmax(dim=1)
+                    total_correct += (preds == labels_poisoned).sum().item()
+                    total += inputs.size(0)
+            asr = total_correct / total if total > 0 else 0.0
+            self.asr_before_upload[client_id] = asr
+            logger.info(f"[Iteration {iteration}] Client {client_id} assigned region {region_id} — ASR: {asr:.4f}")
 
-    return cache_model
+        return cache_model
 
 

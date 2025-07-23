@@ -68,7 +68,7 @@ def fedavg(server_model_state_dict, client_updates_dict, average_bn_buffers=True
         first_client = next(iter(client_updates_dict))
         print(f"[DEBUG] First client ID: {first_client}")
         print(f"[DEBUG] First client update type: {type(client_updates_dict[first_client])}")
-        print(f"[DEBUG] First client update keys (sample): {list(client_updates_dict[first_client].keys())[:3]}")
+        # print(f"[DEBUG] First client update keys (sample): {list(client_updates_dict[first_client].keys())[:3]}")
     else:
         print("[ERROR] client_updates_dict is not a dict!")
 
