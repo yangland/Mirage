@@ -48,30 +48,57 @@ def get_region_id(in_l2, in_update_cone, in_weight_cone):
     return (in_weight_cone << 2) | (in_update_cone << 1) | in_l2
 
 
-# def build_region_constraints(stats):
-#     """
-#     Given benign statistics, return constraint dicts for all 8 regions.
-#     Each region ID maps to a dict of constraints.
-#     """
-#     constraints = {}
-#     for region_id in range(8):
-#         in_l2 = region_id & 1
-#         in_update = (region_id >> 1) & 1
-#         in_weight = (region_id >> 2) & 1
+def build_region_constraints(stats, l2_radius_scale=1.0):
+    """
+    Build constraint dicts for regions 1, 2, and 4 with appropriate L2 radius settings.
+    
+    Args:
+        stats: Dictionary with benign model statistics (from compute_benign_statistics)
+        l2_radius_scale: Scaling factor for avg_L2_norm in regions 2 and 4
+    
+    Returns:
+        Dictionary mapping region_id to constraint dict
+    """
+    constraints = {}
 
-#         region_constraints = {
-#             "region_id": region_id,  # ✅ Add this line for loss selection
-#             "apply_l2": bool(in_l2),
-#             "apply_update_cone": bool(in_update),
-#             "apply_weight_cone": bool(in_weight),
-#             "avg_benign_weight": stats["avg_benign_model"],  # θ̄_b
-#             "l2_radius": stats["l2_radius"],
-#             "update_cone_angle": stats["update_cone_angle"] if in_update else None,
-#             "weight_cone_angle": stats["weight_cone_angle"] if in_weight else None,
-#         }
-#         constraints[region_id] = region_constraints
+    # === Region 1: L2 ball constraint ===
+    constraints[1] = {
+        "region_id": 1,
+        "apply_l2": True,
+        "apply_update_cone": False,
+        "apply_weight_cone": False,
+        "avg_benign_weight": stats["avg_benign_model"],
+        "l2_radius": stats["avg_L2_dist"],  # pairwise model distance
+        "update_cone_angle": None,
+        "weight_cone_angle": None,
+    }
 
-#     return constraints
+    # === Region 2: Update direction constraint ===
+    constraints[2] = {
+        "region_id": 2,
+        "apply_l2": True,  # still do PGD with limited step size
+        "apply_update_cone": True,
+        "apply_weight_cone": False,
+        "avg_benign_weight": stats["avg_benign_model"],
+        "l2_radius": stats["avg_L2_norm"] * l2_radius_scale,
+        "update_cone_angle": stats["avg_update_cone_angle"],
+        "weight_cone_angle": None,
+    }
+
+    # === Region 4: Weight direction constraint ===
+    constraints[4] = {
+        "region_id": 4,
+        "apply_l2": True,
+        "apply_update_cone": False,
+        "apply_weight_cone": True,
+        "avg_benign_weight": stats["avg_benign_model"],
+        "l2_radius": stats["avg_L2_norm"] * l2_radius_scale,
+        "update_cone_angle": None,
+        "weight_cone_angle": stats["avg_weight_cone_angle"],
+    }
+
+    return constraints
+
 
 
 

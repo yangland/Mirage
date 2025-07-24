@@ -137,13 +137,6 @@ if __name__ == "__main__":
         # === Step 6: Evaluate global model
         global_eval_results = server.test_global_model(iteration=iteration, malicious_clients=malicious_client)
 
-        # Log clean accuracy
-        logger.info(f"[Eval] Clean Acc: {global_eval_results['clean_acc'] * 100:.2f}%")
-
-        # Log ASR per attacker
-        for attacker_id, stats in global_eval_results["asr"].items():
-            logger.info(f"[Eval] Attacker {attacker_id} -> ASR: {stats['asr'] * 100:.2f}%, Loss: {stats['loss']:.4f}")
-
         # === Step 7: Save checkpoint
         server.save_model(iteration, malicious_client.trigger_set, malicious_client.mask_set)
 

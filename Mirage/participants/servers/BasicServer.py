@@ -337,4 +337,7 @@ class \
 
         # === Apply aggregated update to global model
         for name, param in self.global_model.state_dict().items():
-            param.add_(aggregated_update[name].to(param.device))
+            # param.add_(aggregated_update[name].to(param.device))
+            update_tensor = aggregated_update[name].to(dtype=param.dtype, device=param.device)
+            param.add_(update_tensor)
+
