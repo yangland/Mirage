@@ -72,7 +72,7 @@ class No_defense_Server(BasicServer):
         malicious_client,
         selected_clients_list,
         malicious_clients_list,
-        region_assignments,
+        region_mapping,
         **kwargs
         ):
         logger.info(f"Training on global iteration {iteration} ")
@@ -109,8 +109,8 @@ class No_defense_Server(BasicServer):
             logger.info(f"[DEBUG] # of benign models: {len(benign_models_from_malicious)}")
             logger.info(f"[DEBUG] Mean pairwise L2 distance: {region_stats['avg_L2_dist']:.4f}")
             logger.info(f"[DEBUG] Mean L2 norm of updates: {region_stats['avg_L2_norm']:.4f}")
-            logger.info(f"[DEBUG] Mean angle between updates: {region_stats['avg_update_cone_angle']:.8f}°")
-            logger.info(f"[DEBUG] Mean angle between weights: {region_stats['avg_weight_cone_angle']:.8f}°")
+            logger.info(f"[DEBUG] Mean cos dist between updates: {region_stats['avg_update_cos_d']:.8f}°")
+            logger.info(f"[DEBUG] Mean cos dist between weights: {region_stats['avg_weight_cos_d']:.8f}°")
 
             region_constraints_dict = build_region_constraints(region_stats)
         else:
@@ -118,7 +118,7 @@ class No_defense_Server(BasicServer):
             region_constraints_dict = {i: {} for i in range(8)}  # fallback
 
         # === Step 3: Use externally provided region assignments ===
-        logger.info(f"[Round {iteration}] Using externally provided region assignments: {region_assignments}")
+        logger.info(f"[Round {iteration}] Using externally provided region assignments: {region_mapping}")
         logger.info(f"[Round {iteration}] selected_clients_list: {selected_clients_list}")
 
         # === Step 4: Train clients ===
@@ -131,7 +131,7 @@ class No_defense_Server(BasicServer):
 
             if client_id in malicious_clients_list:
                 # Get region constraint
-                region_id = region_assignments.get(client_id)
+                region_id = region_mapping.get(client_id)
                 updated_model = malicious_client.local_train(
                     iteration, local_model, client_train_data, client_id,
                     test_loader=self.test_dataloader,

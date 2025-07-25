@@ -91,7 +91,8 @@ if __name__ == "__main__":
     print(f"[DEBUG] Type of malicious_client: {type(malicious_client)}")
 
     all_malicious_clients_ids = [malicious_client for _ in range(params_loaded["no_of_adversaries"])]
-    
+    possible_region_ids_list = list(range(1, 5))  # 4 regions
+
     for iteration in range(server.params["start_iteration"], server.params["end_iteration"]):
         logger.info(f"====================== Current Round: {iteration} ======================")
 
@@ -102,14 +103,15 @@ if __name__ == "__main__":
         selected_clients, selected_malicious_clients = server.select_clients(iteration)
 
         # === Step 3: Assign region IDs to malicious clients
-        region_assignments = assign_regions_to_malicious(
+        region_mapping = assign_regions_to_malicious(
             selected_clients_list=selected_clients,
             malicious_clients_list=selected_malicious_clients,
             iteration=iteration,
-            possible_region_ids=[1, 2, 4]  # or dynamically from config
+            possible_region_ids=possible_region_ids_list,
+            server=server
         )
-
-
+        logger.info(f"[Round {iteration}] Region assignments: {region_mapping}")
+        
         # === Step 4: Preprocess + client uploads
         server.pre_process(test_data=server.test_dataloader, iteration=iteration)
 
@@ -124,7 +126,7 @@ if __name__ == "__main__":
             malicious_client=malicious_client,
             selected_clients_list=selected_clients,
             malicious_clients_list=selected_malicious_clients,
-            region_assignments=region_assignments 
+            region_mapping=region_mapping 
         )
 
         # === Step 5: Aggregate model

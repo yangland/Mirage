@@ -33,6 +33,7 @@ class \
                                                                      self.params["poisoned_end_iteration"],
                                                                      self.params["poisoned_iteration_interval"])]
         self.test_model_once(-1, self.test_dataloader, is_poisoned=False)
+        self.region_index = 0
 
     def pre_process(self, *args, **kwargs):
 

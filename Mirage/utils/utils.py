@@ -258,14 +258,17 @@ def evaluate_asr_after_aggregation(server, region_assignments, malicious_client,
     return avg_asr_after
 
 
-def assign_regions_to_malicious(selected_clients_list, malicious_clients_list, iteration, possible_region_ids=[1, 2, 4]):
+def assign_regions_to_malicious(selected_clients_list, malicious_clients_list,
+                                iteration, possible_region_ids=[1, 2, 3, 4], server=None):
     region_assignments = {}
-    region_pool = itertools.cycle(possible_region_ids)
+    ids = possible_region_ids
+    num_regions = len(ids)
     malicious_clients_this_round = [cid for cid in selected_clients_list if cid in malicious_clients_list]
 
     for client_id in malicious_clients_this_round:
-        region_id = next(region_pool)
+        region_id = ids[server.region_index % num_regions]
         region_assignments[client_id] = region_id
         logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id}")
+        server.region_index += 1  # Increment after each assignment
 
     return region_assignments

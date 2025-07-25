@@ -9,7 +9,8 @@ import numpy as np
 from tqdm import tqdm
 from participants.clients.BasicClient import BasicClient
 from utils.utils import poisoned_batch_injection
-from utils.regoin_utils import flatten_model, unflatten_model, compute_geo_loss, project_model_into_region
+from utils.regoin_utils import flatten_model, compute_geo_loss, project_model_into_region, \
+    search_k_percent_to_fix_geometry, apply_delta_to_model, check_geometric_constraint
 from utils.visualize import visualize, visualize_batch, visualize_tsne
 import torch.nn.functional as F
 
@@ -265,7 +266,7 @@ class MirageClient(BasicClient):
         test_loader=None,
     ):
         """
-        Region-constrained local training (e.g., PGD projection with geometric loss).
+        Region-constrained local training with geometric loss (for R1–R4).
         """
         device = self.params["run_device"]
         global_model = copy.deepcopy(model)
@@ -286,12 +287,15 @@ class MirageClient(BasicClient):
 
         ce_loss = nn.CrossEntropyLoss().to(device)
 
-        # === Extract region constraint info ===
-        region_id = constraint.get("region_id", 0)
-        avg_benign_model = constraint.get("avg_benign_weight", global_model)
+        # === Step 2: Extract region constraint info ===
+        avg_benign_model = constraint.get("avg_benign_weight", None)
         l2_radius = constraint.get("l2_radius", 1.0)
+        update_cone_mode = constraint.get("update_cone_mode", 1)
 
-        # === Step 2: PGD Training Loop ===
+        # Precompute Δb = θ̄_b - θ^t
+        delta_b = flatten_model(avg_benign_model) - flatten_model(global_model)
+
+        # === Step 3: PGD Training Loop ===
         for epoch in range(self.params["poisoned_retrain_no_times"]):
             for batch_idx, batch in enumerate(train_loader):
                 inputs, labels = poisoned_batch_injection(
@@ -307,18 +311,17 @@ class MirageClient(BasicClient):
                 outputs = cache_model(inputs)
                 base_loss = ce_loss(outputs, labels)
 
-                # === Compute Δθ ===
+                # Compute Δθ (current update)
                 delta_theta = flatten_model(cache_model) - flatten_model(global_model)
 
-                # === Compute geometric loss ===
+                # Compute geometric loss
                 geo_loss = compute_geo_loss(
                     delta_theta=delta_theta,
-                    theta=cache_model,
-                    global_model=global_model,
-                    avg_benign_model=avg_benign_model,
-                    region_id=region_id
+                    delta_b=delta_b,
+                    update_cone_mode=update_cone_mode
                 )
 
+                # Total loss = CE + λ_geo * geo_loss
                 total_loss = base_loss + self.params.get("lambda_geo", 1.0) * geo_loss
 
                 if torch.isnan(total_loss):
@@ -328,34 +331,48 @@ class MirageClient(BasicClient):
                 total_loss.backward()
                 optimizer.step()
 
-                # === Project back into region ===
+                # === Project back into L2 ball ===
                 cache_model = project_model_into_region(
                     model=cache_model,
                     center_model=avg_benign_model,
                     radius=l2_radius
                 )
 
-        # # === Step 3: Evaluate ASR ===
-        # if test_loader:
-        #     cache_model.eval()
-        #     total_correct = 0
-        #     total = 0
-        #     with torch.no_grad():
-        #         for inputs, labels in test_loader:
-        #             inputs, labels = inputs.to(device), labels.to(device)
-        #             sample_indices = ~(labels == target_label)
-        #             inputs = inputs[sample_indices]
-        #             labels = labels[sample_indices]
-        #             if len(inputs) == 0:
-        #                 continue
-        #             inputs = (1 - mask_) * inputs + mask_ * trigger_
-        #             labels_poisoned = torch.full_like(labels, target_label).to(device)
-        #             preds = cache_model(inputs).argmax(dim=1)
-        #             total_correct += (preds == labels_poisoned).sum().item()
-        #             total += inputs.size(0)
-        #     asr = total_correct / total if total > 0 else 0.0
-        #     self.asr_before_upload[client_id] = asr
-        #     logger.info(f"[Iteration {iteration}] Client {client_id} assigned region {region_id} — ASR: {asr:.4f}")
+        # === Step 5: Validate Geometry ===
+        delta_theta = flatten_model(cache_model) - flatten_model(global_model)
+        cosine_threshold = constraint.get("cosine_threshold", 0.0)
+
+        is_valid = check_geometric_constraint(
+            delta_theta=delta_theta,
+            delta_b=delta_b,
+            update_cone_mode=update_cone_mode,
+            cosine_threshold=cosine_threshold
+        )
+
+        # === Step 6: Binary Search for Sign Flipping if Invalid ===
+        if not is_valid:
+            logger.warning(f"[Iteration {iteration}] Client {client_id} violates geo constraint. Starting binary search sign flipping.")
+            fixed_delta, final_k = search_k_percent_to_fix_geometry(
+                delta_theta=delta_theta,
+                delta_b=delta_b,
+                update_cone_mode=update_cone_mode,
+                cosine_threshold=cosine_threshold
+            )
+
+            if final_k is not None:
+                logger.info(f"[Fix] Client {client_id} — Constraint fixed with bottom {final_k}% sign flipping.")
+                cache_model = apply_delta_to_model(cache_model, global_model, fixed_delta)
+
+                # Optional: Reproject after flipping
+                # cache_model = project_model_into_region(
+                #     model=cache_model,
+                #     center_model=avg_benign_model,
+                #     radius=l2_radius
+                # )
+            else:
+                logger.warning(f"[Fix] Client {client_id} — Could NOT fix constraint with ≤100% flipping.")
+
+
 
         return cache_model
 
@@ -391,7 +408,7 @@ class MirageClient(BasicClient):
                 model=model,
                 train_loader=train_loader,
                 client_id=client_id,
-                constraint=region_constraints,
+                constraint=region_constraints, # constraint for this client
                 test_loader=test_loader,
             )
         else:
