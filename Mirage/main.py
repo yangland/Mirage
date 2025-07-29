@@ -103,14 +103,14 @@ if __name__ == "__main__":
         selected_clients, selected_malicious_clients = server.select_clients(iteration)
 
         # === Step 3: Assign region IDs to malicious clients
-        region_mapping = assign_regions_to_malicious(
+        client_region_mapping = assign_regions_to_malicious(
             selected_clients_list=selected_clients,
             malicious_clients_list=selected_malicious_clients,
             iteration=iteration,
             possible_region_ids=possible_region_ids_list,
             server=server
         )
-        logger.info(f"[Round {iteration}] Region assignments: {region_mapping}")
+        logger.info(f"[Round {iteration}] Region assignments: {client_region_mapping}")
         
         # === Step 4: Preprocess + client uploads
         server.pre_process(test_data=server.test_dataloader, iteration=iteration)
@@ -126,7 +126,7 @@ if __name__ == "__main__":
             malicious_client=malicious_client,
             selected_clients_list=selected_clients,
             malicious_clients_list=selected_malicious_clients,
-            region_mapping=region_mapping 
+            client_region_mapping=client_region_mapping 
         )
 
         # === Step 5: Aggregate model
@@ -137,7 +137,12 @@ if __name__ == "__main__":
         logger.info(f"aggregated_model: {aggregated_model_id}")
 
         # === Step 6: Evaluate global model
-        global_eval_results = server.test_global_model(iteration=iteration, malicious_clients=malicious_client)
+        global_eval_results = server.test_global_model(
+                                                        iteration=iteration,
+                                                        malicious_clients=malicious_client,
+                                                        possible_region_ids=possible_region_ids_list,
+                                                        client_region_mapping=client_region_mapping
+                                                    )
 
         # === Step 7: Save checkpoint
         server.save_model(iteration, malicious_client.trigger_set, malicious_client.mask_set)

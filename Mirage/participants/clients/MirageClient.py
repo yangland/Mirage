@@ -22,8 +22,10 @@ class MirageClient(BasicClient):
         super(MirageClient, self).__init__(params, train_dataloader, test_dataloader)
         self.init_trigger_mask()
         self.asr_before_upload = {}
+        self.trigger_set_by_region = {}
+        self.mask_set_by_region = {}
 
-    def generate_discriminator_dataloader(self, model, train_loader, trigger_, mask_, client_id):
+    def generate_discriminator_dataloader(self, model, train_loader, trigger_, mask_, client_id, region_mapping):
         '''
         discriminator trainset, target class is 0, target class is 1
         :param model:
@@ -45,7 +47,9 @@ class MirageClient(BasicClient):
                 label_list[class_ind] += sum(indices)
                 samples_per_class[class_ind] = torch.cat((samples_per_class[class_ind], inputs[indices]), dim=0)
 
-        target_class = self.params["poison_label_swap"][client_id]
+        region_id = region_mapping[client_id]
+        target_class = self.params["poison_label_swap_by_region"][region_id]
+
         for i in range(class_num):
             sample = samples_per_class[i]
             if len(sample) == 0:
@@ -68,8 +72,13 @@ class MirageClient(BasicClient):
                 continue
             samples = samples_per_class[i]
             labels = torch.ones(len(samples), dtype=torch.long, device=self.params["run_device"])
-            poisoned_sample, _ = poisoned_batch_injection((samples, labels), trigger=trigger_, mask=mask_, is_eval=True,
-                                                          label_swap=target_class)
+            poisoned_sample, _ = poisoned_batch_injection(batch=(samples, labels), 
+                                                          trigger=trigger_,
+                                                          mask=mask_, 
+                                                          is_eval=True,
+                                                          client_id=client_id,
+                                                          region_id=region_id)
+            
             samples_discriminator_dataloader = torch.cat((samples_discriminator_dataloader, poisoned_sample), dim=0)
             labels_discriminator_dataloader = torch.cat((labels_discriminator_dataloader, labels), dim=0)
 
@@ -134,7 +143,7 @@ class MirageClient(BasicClient):
 
         return discriminator_
 
-    def search_trigger(self, model, train_loader, client_id, test_loader=None):
+    def search_trigger(self, model, train_loader, client_id, test_loader=None, region_mapping=None):
         '''
         optimize trigger
 
@@ -176,11 +185,13 @@ class MirageClient(BasicClient):
                 backdoor_inputs = inputs[batch_backdoor_indices]
                 backdoor_targets = targets[batch_backdoor_indices]
 
-                backdoor_inputs, backdoor_targets = poisoned_batch_injection((backdoor_inputs, backdoor_targets),
-                                                                             trigger=t, mask=mask_, is_eval=False,
-                                                                             label_swap=
-                                                                             self.params["poison_label_swap"][
-                                                                                 client_id])
+                backdoor_inputs, backdoor_targets = poisoned_batch_injection(batch=(backdoor_inputs, backdoor_targets),
+                                                                             trigger=t, 
+                                                                             mask=mask_, 
+                                                                             is_eval=False,
+                                                                             client_id=client_id,
+                                                                             region_id=region_mapping[client_id]
+                                                                             )
 
                 backdoor_inputs = backdoor_inputs.to(self.params["run_device"])
 
@@ -207,7 +218,8 @@ class MirageClient(BasicClient):
                     t.requires_grad_()
         return t.detach_()
 
-    def local_train_mirage(self, iteration, model, train_loader, client_id, test_loader=None):
+
+    def local_train_mirage(self, iteration, model, train_loader, client_id, test_loader=None, region_id=None):
         '''
         poisoning training process
 
@@ -237,9 +249,12 @@ class MirageClient(BasicClient):
             counter = 0.
             for batch_idx, batch in enumerate(train_loader):
                 counter += 1
-                inputs, labels = poisoned_batch_injection(batch, trigger=self.trigger_set[client_id],
-                                                          mask=self.mask_set[client_id], is_eval=False,
-                                                          label_swap=self.params["poison_label_swap"][client_id])
+                inputs, labels = poisoned_batch_injection(batch=batch, 
+                                                          trigger=self.trigger_set[client_id],
+                                                          mask=self.mask_set[client_id], 
+                                                          is_eval=False,
+                                                          client_id=client_id,
+                                                          region_id=region_id)
 
                 inputs, labels = inputs.to(self.params["run_device"]), labels.to(self.params["run_device"])
                 outputs = cache_model(inputs)
@@ -264,6 +279,7 @@ class MirageClient(BasicClient):
         client_id,
         constraint,
         test_loader=None,
+        region_id=None
     ):
         """
         Region-constrained local training with geometric loss (for R1–R4).
@@ -283,7 +299,6 @@ class MirageClient(BasicClient):
         trigger_ = self.search_trigger(cache_model, train_loader, client_id)
         self.trigger_set[client_id] = trigger_
         mask_ = self.mask_set[client_id]
-        target_label = self.params["poison_label_swap"][client_id]
 
         ce_loss = nn.CrossEntropyLoss().to(device)
 
@@ -299,11 +314,12 @@ class MirageClient(BasicClient):
         for epoch in range(self.params["poisoned_retrain_no_times"]):
             for batch_idx, batch in enumerate(train_loader):
                 inputs, labels = poisoned_batch_injection(
-                    batch,
+                    batch=batch,
                     trigger=self.trigger_set[client_id],
                     mask=mask_,
                     is_eval=False,
-                    label_swap=target_label
+                    client_id=client_id,
+                    region_id=region_id
                 )
                 inputs, labels = inputs.to(device), labels.to(device)
 
@@ -372,8 +388,6 @@ class MirageClient(BasicClient):
             else:
                 logger.warning(f"[Fix] Client {client_id} — Could NOT fix constraint with ≤100% flipping.")
 
-
-
         return cache_model
 
 
@@ -385,6 +399,7 @@ class MirageClient(BasicClient):
         client_id,
         test_loader=None,
         region_constraints=None,
+        region_id= None,
         attack_variant="region constraint",  # or "Mirage org", "region constraint"
     ):
         """
@@ -397,7 +412,7 @@ class MirageClient(BasicClient):
 
         if attack_variant == "Mirage org":
             print(f"[DEBUG] Client {client_id} using 'Mirage org' attack.")
-            return self.local_train_mirage(iteration, model, train_loader, client_id)
+            return self.local_train_mirage(iteration, model, train_loader, client_id, region_id=region_id)
 
         elif attack_variant == "region constraint":
             print(f"[DEBUG] Client {client_id} using 'region constraint' attack.")
@@ -410,6 +425,7 @@ class MirageClient(BasicClient):
                 client_id=client_id,
                 constraint=region_constraints, # constraint for this client
                 test_loader=test_loader,
+                region_id=region_id
             )
         else:
             raise ValueError(f"[ERROR] Unknown attack_variant: {attack_variant}")

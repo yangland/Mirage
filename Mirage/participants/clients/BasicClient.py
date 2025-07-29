@@ -60,12 +60,13 @@ class BasicClient():
     def local_train(self, iteration, model, train_loader, client_id):
         raise NotImplementedError
 
-    def local_test_once(self, model, test_dataloader, is_poisoned=False, client_id=0):
+    def local_test_once(self, model, test_dataloader, is_poisoned=False, client_id=0, region_mapping=None):
         '''
         测试本地模型
-        :param test_dataloader:
-        :param is_poisoned: 是否投毒环境下
-        :param client_id:
+        :param test_dataloader: DataLoader for testing
+        :param is_poisoned: 是否为投毒测试（ASR 评估）
+        :param client_id: 当前客户端 id
+        :param region_mapping: 映射 client_id → region_id
         :return: acc, loss
         '''
         model.eval()
@@ -75,12 +76,22 @@ class BasicClient():
             total_correct = 0.
             total_num = 0.
             criterion = nn.CrossEntropyLoss(reduction='sum')
+
             for i, batch in enumerate(test_dataloader):
                 if is_poisoned:
-                    # 如果需要测试ASR，则需要对batch进行投毒
-                    batch = poisoned_batch_injection(batch, self.trigger_set[client_id], self.mask_set[client_id],
-                                                     is_eval=True,
-                                                     label_swap=self.params["poison_label_swap"][client_id])
+                    if region_mapping is None:
+                        raise ValueError("region_mapping must be provided when is_poisoned=True")
+
+                    # Use updated poisoned_batch_injection (no label_swap)
+                    batch = poisoned_batch_injection(
+                        batch,
+                        self.trigger_set[client_id],
+                        self.mask_set[client_id],
+                        is_eval=True,
+                        client_id=client_id,
+                        region_id=region_mapping[client_id],
+                    )
+
                 inputs, labels = batch
                 inputs = inputs.to(self.params["run_device"])
                 labels = labels.to(self.params["run_device"])
@@ -93,6 +104,7 @@ class BasicClient():
             acc = total_correct / total_num
             loss = total_loss / total_num
             return acc, loss
+
 
     def get_lr(self, iteration):
         lr = self.params["benign_lr"] * (2400 - iteration) / 2400  # original

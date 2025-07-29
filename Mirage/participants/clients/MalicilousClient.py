@@ -15,7 +15,7 @@ class MaliciousClient(BasicClient):
         super(MaliciousClient, self).__init__(params, train_dataloader, test_dataloader)
         self.init_trigger_mask()
 
-    def local_train(self, iteration, model, train_loader, client_id, **kwargs):
+    def local_train(self, iteration, model, train_loader, client_id, region_mapping, **kwargs):
         '''
         Malicious client 的训练过程，包括trigger植入
 
@@ -38,9 +38,14 @@ class MaliciousClient(BasicClient):
             for batch_idx, batch in enumerate(train_loader):
 
                 inputs, labels = batch
-                inputs, labels = poisoned_batch_injection(batch, trigger=self.trigger_set[client_id],
-                                                          mask=self.mask_set[client_id], is_eval=False,
-                                                          label_swap=self.params["poison_label_swap"][client_id])
+                inputs, labels = poisoned_batch_injection(
+                                    batch,
+                                    self.trigger_set[client_id],
+                                    self.mask_set[client_id],
+                                    is_eval=True,
+                                    client_id=client_id,
+                                    region_id=region_mapping[client_id],
+                                )
                 inputs, labels = inputs.to(self.params["run_device"]), labels.to(self.params["run_device"])
                 optimizer.zero_grad()
                 outputs = cache_model(inputs)
