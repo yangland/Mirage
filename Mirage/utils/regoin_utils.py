@@ -122,7 +122,7 @@ def search_k_percent_to_fix_geometry(delta_theta, delta_b, update_cone_mode, cos
         k = mid / 100.0
         flipped_delta = flip_bottom_k_percent(delta_original, k)
 
-        valid = check_geometric_constraint(
+        valid, _ = check_cos_constraint(
             delta_theta=flipped_delta,
             delta_b=delta_b,
             update_cone_mode=update_cone_mode,
@@ -155,25 +155,40 @@ def flip_bottom_k_percent(delta_theta, k_percent):
     return delta
 
 
-def check_geometric_constraint(delta_theta, delta_b, update_cone_mode, cosine_threshold):
+def check_cos_constraint(delta_theta, delta_b, update_cone_mode, cosine_threshold):
     """
-    Check if the cosine similarity between delta_theta and delta_b
+    Check if the cosine distance between delta_theta and delta_b
     satisfies the geometric constraint.
 
-    - For update_cone_mode == -1 → require: cos_sim > threshold
-    - For update_cone_mode == +1 → require: cos_sim < threshold
+    Returns:
+        is_valid (bool): Whether the constraint is satisfied
+        cos_dist (float): The actual cosine distance
+        cosine_threshold (float): The constraint threshold
     """
-    if delta_b is None or torch.norm(delta_b) == 0 or torch.norm(delta_theta) == 0:
-        return True  # Avoid false negatives
+    if delta_b is None or delta_theta is None:
+        return True, None, cosine_threshold  # Avoid crashing
 
-    cos_sim = F.cosine_similarity(delta_theta.unsqueeze(0), delta_b.unsqueeze(0), eps=1e-8).item()
+    norm_b = torch.norm(delta_b)
+    norm_theta = torch.norm(delta_theta)
 
-    if update_cone_mode == -1:
-        return cos_sim > cosine_threshold
-    elif update_cone_mode == 1:
-        return cos_sim < cosine_threshold
+    if norm_b == 0 or norm_theta == 0:
+        return True, None, cosine_threshold  # Avoid division by zero
+
+    # Compute cosine similarity
+    cos_sim = F.cosine_similarity(
+        delta_theta.unsqueeze(0), delta_b.unsqueeze(0), eps=1e-8
+    ).item()
+    cos_dist = 1.0 - cos_sim  # Convert to cosine distance
+
+    if update_cone_mode == 1:
+        is_valid = cos_dist < cosine_threshold  # Require alignment
+    elif update_cone_mode == -1:
+        is_valid = cos_dist > cosine_threshold  # Require dissimilarity
     else:
         raise ValueError(f"[ERROR] Invalid update_cone_mode: {update_cone_mode}")
+
+    return is_valid, cos_dist
+
 
 
 def compute_benign_statistics(benign_models, server_model):
@@ -304,23 +319,50 @@ def apply_delta_to_model(base_model, delta_theta):
 
 
 
-def compute_geo_loss(delta_theta, delta_b, update_cone_mode):
+def compute_geo_loss(delta_theta, delta_b, update_cone_mode, threshold=1e-6):
     """
-    Computes geometric loss based on region type:
-    - update_cone_mode = 1: encourage alignment (1 - cos_sim)
-    - update_cone_mode = -1: encourage opposition (cos_sim)
+    Computes geometric alignment loss between delta_theta and delta_b.
+    Skips loss if delta_theta or delta_b is too small.
     """
-    if delta_b is None or torch.norm(delta_b) == 0 or torch.norm(delta_theta) == 0:
-        return 0.0
+    norm_theta = delta_theta.norm()
+    norm_b = delta_b.norm()
 
-    cos_sim = F.cosine_similarity(delta_theta.unsqueeze(0), delta_b.unsqueeze(0), eps=1e-8).item()
+    if norm_theta.item() < threshold or norm_b.item() < threshold:
+        # Return a zero loss that supports autograd
+        return torch.tensor(0.0, device=delta_theta.device, requires_grad=True)
+
+    # Cosine similarity ∈ [-1, 1], clamp to avoid numerical issues
+    cos_sim = F.cosine_similarity(delta_theta.unsqueeze(0), delta_b.unsqueeze(0), eps=1e-8)
+    cos_sim = cos_sim.clamp(-1.0, 1.0)
 
     if update_cone_mode == 1:
-        return 1 - cos_sim  # alignment
+        return 1.0 - cos_sim  # alignment
     elif update_cone_mode == -1:
-        return cos_sim      # opposition
+        return 1.0 + cos_sim  # opposition
     else:
         raise ValueError(f"Invalid update_cone_mode: {update_cone_mode}")
+
+
+def scale_model_update_to_l2_boundary(
+    cache_model: torch.nn.Module,
+    global_model: torch.nn.Module,
+    l2_radius: float
+) -> torch.nn.Module:
+    """
+    Scales the update from global_model to cache_model so that its L2 norm equals l2_radius.
+    """
+    delta = flatten_model(cache_model) - flatten_model(global_model)
+    norm = delta.norm()
+
+    if norm < 1e-12:
+        print("[WARNING] Update norm too small; skipping scaling.")
+        return cache_model
+
+    scaled_delta = delta / norm * l2_radius
+    new_flat_params = flatten_model(global_model) + scaled_delta
+    updated_model= unflatten_model(new_flat_params, cache_model)
+
+    return updated_model
 
 
 def is_within_l2_ball(model, benign_model, l2_radius):

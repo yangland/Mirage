@@ -2,59 +2,52 @@
 
 import csv
 import os
-from collections import defaultdict
 
 class BackdoorSurvivalTracker:
-    def __init__(self, save_dir):
+    def __init__(self, save_dir, region_ids):
+        """
+        Args:
+            save_dir (str): Directory to save CSV files.
+            region_ids (list[int]): List of region IDs (e.g. [1, 2, 3, 4])
+        """
         self.save_dir = save_dir
+        self.region_ids = region_ids
         os.makedirs(self.save_dir, exist_ok=True)
-        
-        # Store per-iteration records: region_id -> list of (before_asr, after_asr)
-        self.records = defaultdict(list)
+        self.records = []
 
-    def log_iteration(self, iteration, region_id_to_asr_before, region_id_to_asr_after):
+    def log_iteration(self, iteration, region_id_to_asr, attacked_regions):
         """
-        Save ASR before and after aggregation for each region at a given round.
-        """
-        for region_id in region_id_to_asr_before:
-            before = region_id_to_asr_before[region_id]
-            after = region_id_to_asr_after.get(region_id, 0.0)
-            self.records[region_id].append({
-                "iteration": iteration,
-                "before_asr": before,
-                "after_asr": after,
-                "survival_rate": after / before if before > 0 else 0.0
-            })
+        Log ASR and whether each region was attacked during this iteration.
 
-
-    def save_csv(self, filename="backdoor_survival_log.csv"):
+        Args:
+            iteration (int): Current training round
+            region_id_to_asr (dict): Mapping from region ID → ASR (float)
+            attacked_regions (list[int]): Region IDs that were attacked this round
         """
-        Save the full log of ASRs and survival rates to CSV.
+        entry = {"iteration": iteration}
+
+        for region_id in self.region_ids:
+            entry[f"R{region_id}_selected"] = 1 if region_id in attacked_regions else 0
+            entry[f"R{region_id}_ASR"] = region_id_to_asr.get(region_id, 0.0)
+
+        self.records.append(entry)
+
+    def save_csv(self, filename="backdoor_tracking_log.csv"):
+        """
+        Save all records to a CSV file with column order:
+        iteration, R1_selected, R2_selected, ..., Rn_selected, R1_ASR, ..., Rn_ASR
         """
         csv_path = os.path.join(self.save_dir, filename)
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["region_id", "iteration", "before_asr", "after_asr", "survival_rate"])
-            writer.writeheader()
-            for region_id, entries in self.records.items():
-                for entry in entries:
-                    writer.writerow({
-                        "region_id": region_id,
-                        **entry
-                    })
 
-    def summarize_preferences(self, filename="region_preference_summary.csv"):
-        """
-        Compute average survival rate per region and save.
-        """
-        summary_path = os.path.join(self.save_dir, filename)
-        with open(summary_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["region_id", "avg_survival_rate", "num_rounds"])
+        # Separate selected and ASR columns
+        selected_fields = [f"R{rid}_selected" for rid in self.region_ids]
+        asr_fields = [f"R{rid}_ASR" for rid in self.region_ids]
+
+        fieldnames = ["iteration"] + selected_fields + asr_fields
+
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            for region_id, entries in self.records.items():
-                rates = [entry["survival_rate"] for entry in entries]
-                avg_rate = sum(rates) / len(rates) if rates else 0.0
-                writer.writerow({
-                    "region_id": region_id,
-                    "avg_survival_rate": avg_rate,
-                    "num_rounds": len(entries)
-                })
+            for entry in self.records:
+                writer.writerow(entry)
+

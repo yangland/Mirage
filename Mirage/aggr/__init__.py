@@ -33,6 +33,8 @@ def aggregate_global_model(
     Returns:
         aggregated_update (dict): new weight deltas (state_dict format)
     """
+    agg_method = agg_method.lower()  # Make case-insensitive
+    
     if agg_method not in SUPPORTED_AGG_METHODS:
         raise ValueError(f"Unsupported aggregation method: {agg_method}")
 

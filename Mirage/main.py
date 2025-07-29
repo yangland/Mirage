@@ -17,10 +17,9 @@ from participants.clients.MalicilousClient import MaliciousClient
 from participants.clients.MirageClient import MirageClient
 from participants.servers.No_defense_Server import No_defense_Server
 
-from utils.utils import args_update, assign_regions_to_malicious, evaluate_asr_before_aggregation, evaluate_asr_after_aggregation
+from utils.utils import args_update, assign_regions_to_malicious
 from utils.visualize import visualize_batch
 from utils.backdoor_survival_tracker import BackdoorSurvivalTracker
-tracker = BackdoorSurvivalTracker(save_dir="results/backdoor_tracking")
 
 logger = logging.getLogger("logger")
 
@@ -92,6 +91,11 @@ if __name__ == "__main__":
 
     all_malicious_clients_ids = [malicious_client for _ in range(params_loaded["no_of_adversaries"])]
     possible_region_ids_list = list(range(1, 5))  # 4 regions
+    
+    tracker = BackdoorSurvivalTracker(
+    save_dir="results/backdoor_tracking",
+    region_ids=possible_region_ids_list
+    )
 
     for iteration in range(server.params["start_iteration"], server.params["end_iteration"]):
         logger.info(f"====================== Current Round: {iteration} ======================")
@@ -119,7 +123,6 @@ if __name__ == "__main__":
             weight_accumulator,
             weight_accumulator_by_client,
             aggregated_model_id,
-            malicious_models_by_id
         ) = server.broadcast_upload(
             iteration=iteration,
             benign_client=benign_client,
@@ -143,13 +146,24 @@ if __name__ == "__main__":
                                                         possible_region_ids=possible_region_ids_list,
                                                         client_region_mapping=client_region_mapping
                                                     )
+        # log the results in CSV file
+        attacked_regions = list(set(client_region_mapping.values()))
 
+        region_id_to_asr = {
+            rid: global_eval_results["asr"].get(rid, {}).get("asr", 0.0)
+            for rid in possible_region_ids_list
+        }
+
+        tracker.log_iteration(
+            iteration=iteration,
+            region_id_to_asr=region_id_to_asr,
+            attacked_regions=attacked_regions
+        )
+        
         # === Step 7: Save checkpoint
         server.save_model(iteration, malicious_client.trigger_set, malicious_client.mask_set)
 
 
-
 # ==================== End of Training ====================
 # Save backdoor survival results
-tracker.save_csv(filename=f"backdoor_survival_log_{params_loaded['defense_method']}.csv")
-tracker.summarize_preferences()
+tracker.save_csv(filename=f"backdoor_tracking_log_{params_loaded['defense_method']}.csv")

@@ -10,7 +10,7 @@ from tqdm import tqdm
 from participants.clients.BasicClient import BasicClient
 from utils.utils import poisoned_batch_injection
 from utils.regoin_utils import flatten_model, compute_geo_loss, project_model_into_region, \
-    search_k_percent_to_fix_geometry, apply_delta_to_model, check_geometric_constraint
+    search_k_percent_to_fix_geometry, apply_delta_to_model, check_cos_constraint, scale_model_update_to_l2_boundary
 from utils.visualize import visualize, visualize_batch, visualize_tsne
 import torch.nn.functional as F
 
@@ -21,11 +21,10 @@ class MirageClient(BasicClient):
     def __init__(self, params, train_dataloader, test_dataloader):
         super(MirageClient, self).__init__(params, train_dataloader, test_dataloader)
         self.init_trigger_mask()
-        self.asr_before_upload = {}
         self.trigger_set_by_region = {}
         self.mask_set_by_region = {}
 
-    def generate_discriminator_dataloader(self, model, train_loader, trigger_, mask_, client_id, region_mapping):
+    def generate_discriminator_dataloader(self, model, train_loader, trigger_, mask_, client_id, region_id):
         '''
         discriminator trainset, target class is 0, target class is 1
         :param model:
@@ -47,7 +46,6 @@ class MirageClient(BasicClient):
                 label_list[class_ind] += sum(indices)
                 samples_per_class[class_ind] = torch.cat((samples_per_class[class_ind], inputs[indices]), dim=0)
 
-        region_id = region_mapping[client_id]
         target_class = self.params["poison_label_swap_by_region"][region_id]
 
         for i in range(class_num):
@@ -143,7 +141,7 @@ class MirageClient(BasicClient):
 
         return discriminator_
 
-    def search_trigger(self, model, train_loader, client_id, test_loader=None, region_mapping=None):
+    def search_trigger(self, model, train_loader, client_id, test_loader=None, region_id=None):
         '''
         optimize trigger
 
@@ -164,8 +162,12 @@ class MirageClient(BasicClient):
 
         t = copy.deepcopy(trigger_)
         for iters in tqdm(range(self.params["trigger_search_no_times"])):
-            dataloader_discriminator = self.generate_discriminator_dataloader(model, local_train_loader, t, mask_,
-                                                                              client_id)
+            dataloader_discriminator = self.generate_discriminator_dataloader(model=model, 
+                                                                              train_loader=local_train_loader, 
+                                                                              trigger_=t, 
+                                                                              mask_=mask_,
+                                                                              client_id=client_id,
+                                                                              region_id=region_id)
             total_loss = 0.
             trigger_optim = torch.optim.Adam([t], lr=self.params["trigger_lr"], weight_decay=5e-4)
             counter = 0
@@ -190,7 +192,7 @@ class MirageClient(BasicClient):
                                                                              mask=mask_, 
                                                                              is_eval=False,
                                                                              client_id=client_id,
-                                                                             region_id=region_mapping[client_id]
+                                                                             region_id=region_id
                                                                              )
 
                 backdoor_inputs = backdoor_inputs.to(self.params["run_device"])
@@ -235,7 +237,10 @@ class MirageClient(BasicClient):
                                     momentum=self.params['poisoned_momentum'],
                                     weight_decay=self.params['poisoned_weight_decay'])
 
-        trigger_ = self.search_trigger(cache_model, train_loader, client_id)
+        trigger_ = self.search_trigger(model=cache_model, 
+                                       train_loader=train_loader, 
+                                       client_id=client_id,
+                                       region_id=region_id)
         self.trigger_set[client_id] = trigger_
 
         model.train()
@@ -296,7 +301,10 @@ class MirageClient(BasicClient):
         )
 
         # === Step 1: Optimize the Trigger ===
-        trigger_ = self.search_trigger(cache_model, train_loader, client_id)
+        trigger_ = self.search_trigger(model=cache_model, 
+                                train_loader=train_loader, 
+                                client_id=client_id,
+                                region_id=region_id)
         self.trigger_set[client_id] = trigger_
         mask_ = self.mask_set[client_id]
 
@@ -304,13 +312,14 @@ class MirageClient(BasicClient):
 
         # === Step 2: Extract region constraint info ===
         avg_benign_model = constraint.get("avg_benign_weight", None)
-        l2_radius = constraint.get("l2_radius", 1.0)
-        update_cone_mode = constraint.get("update_cone_mode", 1)
+        l2_radius = constraint.get("l2_radius")
+        update_cone_mode = constraint.get("update_cone_mode")
+        logger.info(f"client: {client_id}, l2 radius: {l2_radius}, update cone mode: {update_cone_mode}")
 
         # Precompute Δb = θ̄_b - θ^t
         delta_b = flatten_model(avg_benign_model) - flatten_model(global_model)
 
-        # === Step 3: PGD Training Loop ===
+        # === Step 3: Training Loop ===
         for epoch in range(self.params["poisoned_retrain_no_times"]):
             for batch_idx, batch in enumerate(train_loader):
                 inputs, labels = poisoned_batch_injection(
@@ -327,38 +336,59 @@ class MirageClient(BasicClient):
                 outputs = cache_model(inputs)
                 base_loss = ce_loss(outputs, labels)
 
+                # print(f"[DEBUG] outputs stats: min={outputs.min().item()}, max={outputs.max().item()}, mean={outputs.mean().item()}")
+                # print(f"[DEBUG] labels range: {labels.min().item()} to {labels.max().item()}")
+                # print(f"[DEBUG] outputs contains NaN: {torch.isnan(outputs).any().item()}, Inf: {torch.isinf(outputs).any().item()}")
+
+
                 # Compute Δθ (current update)
                 delta_theta = flatten_model(cache_model) - flatten_model(global_model)
+                norm_theta = delta_theta.norm().item()
 
-                # Compute geometric loss
-                geo_loss = compute_geo_loss(
-                    delta_theta=delta_theta,
-                    delta_b=delta_b,
-                    update_cone_mode=update_cone_mode
-                )
+                # === Option B: Only apply geo loss if Δθ is meaningfully non-zero ===
+                norm_theta_threshold = 1e-6
+                
+                if norm_theta > norm_theta_threshold:
+                    geo_loss = compute_geo_loss(
+                        delta_theta=delta_theta,
+                        delta_b=delta_b,
+                        update_cone_mode=update_cone_mode,
+                        threshold = norm_theta_threshold
+                    )
+                else:
+                    # Skip geo loss if delta_theta is too small
+                    geo_loss = torch.tensor(0.0, device=delta_theta.device, requires_grad=True)
 
-                # Total loss = CE + λ_geo * geo_loss
+                # Total loss
                 total_loss = base_loss + self.params.get("lambda_geo", 1.0) * geo_loss
 
                 if torch.isnan(total_loss):
                     print(f"[FATAL] Loss is NaN at iteration {iteration}, client {client_id}")
+                    print(f"    base_loss: {base_loss.item()}, geo_loss: {geo_loss.item()}, delta_theta_norm: {norm_theta:.2e}")
                     return model  # Fail-safe
 
                 total_loss.backward()
                 optimizer.step()
 
-                # === Project back into L2 ball ===
+                # === Project back into L2 region  ===
                 cache_model = project_model_into_region(
                     model=cache_model,
-                    center_model=avg_benign_model,
+                    center_model=global_model,
                     radius=l2_radius
                 )
 
+        # After poisoned training loop, make the L2 norm as required
+        cache_model = scale_model_update_to_l2_boundary(
+            cache_model=cache_model,
+            global_model=global_model,
+            l2_radius=l2_radius
+        )
+
         # === Step 5: Validate Geometry ===
         delta_theta = flatten_model(cache_model) - flatten_model(global_model)
-        cosine_threshold = constraint.get("cosine_threshold", 0.0)
+        cosine_threshold = constraint.get("cosine_threshold")
 
-        is_valid = check_geometric_constraint(
+        is_valid, crafted_cos_dist  = check_cos_constraint(
             delta_theta=delta_theta,
             delta_b=delta_b,
             update_cone_mode=update_cone_mode,
@@ -367,7 +397,11 @@ class MirageClient(BasicClient):
 
         # === Step 6: Binary Search for Sign Flipping if Invalid ===
         if not is_valid:
-            logger.warning(f"[Iteration {iteration}] Client {client_id} violates geo constraint. Starting binary search sign flipping.")
+            logger.warning(
+                            f"[Iteration {iteration}] Client {client_id} violates geo constraint. "
+                            f"cos_dist = {crafted_cos_dist:.4f}, threshold = {cosine_threshold:.4f}. "
+                            "Starting binary search sign flipping."
+                            )
             fixed_delta, final_k = search_k_percent_to_fix_geometry(
                 delta_theta=delta_theta,
                 delta_b=delta_b,
@@ -377,7 +411,7 @@ class MirageClient(BasicClient):
 
             if final_k is not None:
                 logger.info(f"[Fix] Client {client_id} — Constraint fixed with bottom {final_k}% sign flipping.")
-                cache_model = apply_delta_to_model(cache_model, global_model, fixed_delta)
+                cache_model = apply_delta_to_model(global_model, fixed_delta)
 
                 # Optional: Reproject after flipping
                 # cache_model = project_model_into_region(

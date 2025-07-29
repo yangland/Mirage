@@ -87,7 +87,7 @@ class No_defense_Server(BasicServer):
         aggregated_model_id = [1] * self.params["no_of_participants_per_iteration"]
 
         # === Step 1: Sample t malicious clients for benign training (for region stat) ===
-        benign_sample_num = self.params.get("benign_sample_for_region", 10)
+        benign_sample_num = self.params.get("benign_sample_for_region")
         benign_like_malicious_ids = random.sample(malicious_clients_list, min(benign_sample_num, len(malicious_clients_list)))
         benign_models_from_malicious = []
 
@@ -112,7 +112,8 @@ class No_defense_Server(BasicServer):
             logger.info(f"[DEBUG] Mean cos dist between updates: {region_stats['avg_update_cos_d']:.8f}")
             logger.info(f"[DEBUG] Mean cos dist between weights: {region_stats['avg_weight_cos_d']:.8f}")
 
-            region_constraints_dict = build_region_constraints(region_stats)
+            region_constraints_dict = build_region_constraints(stats = region_stats,
+                                                               l2_radius_scale=self.params.get("l2_radius_scale"))
         else:
             logger.warning("Not enough benign-like models to compute region statistics.")
             region_constraints_dict = {i: {} for i in range(8)}  # fallback
@@ -175,9 +176,6 @@ class No_defense_Server(BasicServer):
 
 
         # === Step X: Aggregate trigger/mask per region ===
-        malicious_client.trigger_set_by_region = {}
-        malicious_client.mask_set_by_region = {}
-
         for client_id in selected_clients_list:
             if client_id not in malicious_clients_list:
                 continue
@@ -195,6 +193,5 @@ class No_defense_Server(BasicServer):
                 weight_accumulator,
                 weight_accumulator_by_client,
                 aggregated_model_id,           
-                malicious_client.asr_before_upload
             )
 

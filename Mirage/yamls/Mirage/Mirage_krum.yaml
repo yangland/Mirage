@@ -26,8 +26,8 @@ lr_method: linear
 
 ### Malicious Client Setting
 # Optimizer Setting
-poisoned_lr: 0.01
-poisoned_momentum: 0.9
+poisoned_lr: 0.05 # 0.01
+poisoned_momentum: 0.0 # 0.9
 poisoned_weight_decay: 0.0005
 
 
@@ -50,7 +50,7 @@ fix_nc_bound: True
 nc_bound: 2
 
 ### Server Setting
-agg_method: FedAvg
+agg_method: krum
 Fedprox_mu: 0 #0.5
 
 
@@ -102,5 +102,5 @@ defense_method: nodefense
 
 # Region Setting
 benign_sample_for_region: 5
-l2_radius_scale: 10.0
+l2_radius_scale: 5.0
 lambda_geo: 0.5

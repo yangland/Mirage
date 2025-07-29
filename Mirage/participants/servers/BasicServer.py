@@ -252,15 +252,21 @@ class \
         # === ASR evaluation per region ===
         if iteration >= self.params["poisoned_start_iteration"]:
             for region_id in possible_region_ids:
+                if region_id not in malicious_clients.trigger_set_by_region or \
+                region_id not in malicious_clients.mask_set_by_region:
+                    logger.warning(f"[ASR] Skipping Region {region_id} — no trigger/mask available.")
+                    continue
+
                 trigger = malicious_clients.trigger_set_by_region[region_id]
                 mask = malicious_clients.mask_set_by_region[region_id]
 
-                # Pick any client assigned to this region for evaluation
+                # Pick any available client from this region to perform ASR test
                 test_client_ids = [cid for cid, rid in client_region_mapping.items() if rid == region_id]
                 if not test_client_ids:
-                    continue  # No clients assigned this round to this region
+                    logger.warning(f"[ASR] Skipping Region {region_id} — no clients mapped for testing.")
+                    continue
 
-                test_client_id = test_client_ids[0]  # Pick first client for test
+                test_client_id = test_client_ids[0]  # Pick any one client
 
                 asr, loss = self.test_model_once(
                     iteration=iteration,
