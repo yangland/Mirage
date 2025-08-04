@@ -452,12 +452,11 @@ class \
         extra_args = {}
         num_clients = len(client_grad_dict)
 
-        if agg_method in ["krum", "multi-krum"]:
+        if agg_method in ["krum"]:
             f = num_clients // 2 - 1  # Byzantine tolerance
             m = num_clients - f - 2   # For multi-krum, number of selected updates
             extra_args["f"] = f
-            if agg_method == "multi-krum":
-                extra_args["m"] = m
+            extra_args["m"] = m
 
             print(f"[INFO] Using {agg_method} with f={f}" + (f", m={m}" if agg_method == "multi-krum" else ""))
 
@@ -468,6 +467,7 @@ class \
             client_grad_dict=client_grad_dict,
             params=self.params,
             iteration=getattr(self, "current_iteration", 0),
+            **extra_args,  # Pass extra krum-specific args
         )
 
 

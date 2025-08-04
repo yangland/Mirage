@@ -31,7 +31,7 @@ def flame_aggr(server_model_state_dict, client_updates_dict, noise=0.001, exp_di
     # Return the gradient update (difference between new and old server state)
     server_grad = get_model_update(new_server_sd, server_model_state_dict)
     
-    return server_grad, flame_clients
+    return server_grad
 
 
 def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0):
@@ -68,24 +68,10 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
             cos_i.append(cos_ij.item())
         cos_list.append(cos_i)
 
-    
     if np.isnan(cos_list).any():
         logger.info("FLAME: NaN detected in cos_list!")
         logger.info(f"FLAME: NaN locations: {np.where(np.isnan(cos_list))}")
         cos_list = np.nan_to_num(cos_list, nan=0.0)
-    
-    # os.makedirs(f"{exp_dir}/plots/flame_cos", exist_ok=True)
-
-    # Plot the cosine similarity matrix
-    # matrix_plot(
-    #     np.array(cos_list), 
-    #     f"cos_M{iter}", 
-    #     f"cos_M_{iter}", 
-    #     "client_id", 
-    #     "client_id",
-    #     f"{exp_dir}/plots/flame_cos", 
-    #     client_ids=client_ids
-    # )
     
     clusterer = hdbscan.HDBSCAN(min_cluster_size=num_clients//2 + 1,min_samples=1,allow_single_cluster=True).fit(cos_list)
     logger.info(f"FLAME: clusterer.labels_ {str(clusterer.labels_)}")
@@ -143,8 +129,9 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
     logger.info(f"[FLAME DEBUG][Iter {iter}] Clip value: {clip_value}")
     
     # average of the model udpates then + the server model weight
-    # new_server_sd = no_defence_balance([update_params[i] for i in benign_idx], server_sd_copy)
-    new_server_update = fedavg([update_params[i] for i in benign_idx])
+    new_server_update = fedavg(server_model_state_dict=server_sd_copy,
+                               client_updates_dict={client_ids[i]: update_params[i] for i in benign_idx},
+                               average_bn_buffers=True)
     new_server_sd = get_model_merged(new_server_update, server_sd_copy)
     
     #add noise
@@ -163,13 +150,19 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
 
 
 def get_model_update(updated_model, model):
-    '''Returns the difference while preserving gradients'''
+    """
+    Returns the difference between updated_model and model (server),
+    while preserving 'num_batches_tracked' and other non-learnable buffers.
+    """
     update = {}
     for key in updated_model:
         if key.endswith('num_batches_tracked'):
-            continue
-        update[key] = updated_model[key] - model[key].detach()  # Explicitly detach base model
+            # Preserve the original value from the server model
+            update[key] = model[key].detach().clone()
+        else:
+            update[key] = updated_model[key] - model[key].detach()
     return update
+
 
 def get_model_merged(gradient_update, base_model):
     '''Merges gradient into model while preserving autograd'''

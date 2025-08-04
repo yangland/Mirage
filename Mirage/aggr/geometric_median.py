@@ -17,7 +17,7 @@ def geo_med_aggr(server_model_state_dict, client_updates_dict, device, **kwargs)
             geo_med, client_weights = geometric_median(layer_weights)
             model_weight[layer_name] = geo_med.to(device)
             
-    return model_weight, client_weights
+    return model_weight
 
 
 # https://github.com/mrwojo/geometric_median?utm_source=pocket_reader

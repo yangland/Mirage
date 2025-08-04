@@ -94,7 +94,8 @@ if __name__ == "__main__":
     
     tracker = BackdoorSurvivalTracker(
         save_dir=params_loaded["folder_path"],
-        region_ids=possible_region_ids_list
+        region_ids=possible_region_ids_list,
+        filename=f"backdoor_tracking_log_{params_loaded['defense_method']}.csv"
     )
 
     for iteration in range(server.params["start_iteration"], server.params["end_iteration"]):
@@ -154,7 +155,7 @@ if __name__ == "__main__":
             for rid in possible_region_ids_list
         }
 
-        tracker.log_iteration(
+        tracker.log_iter_csv(
             iteration=iteration,
             region_id_to_asr=region_id_to_asr,
             attacked_regions=attacked_regions
@@ -163,7 +164,4 @@ if __name__ == "__main__":
         # === Step 7: Save checkpoint
         server.save_model(iteration, malicious_client.trigger_set, malicious_client.mask_set)
 
-
-# ==================== End of Training ====================
-# Save backdoor survival results
-tracker.save_csv(filename=f"{params_loaded['folder_path']}/backdoor_tracking_log_{params_loaded['defense_method']}.csv")
+logger.info(f"Round {iteration} completed. FL finished.")
