@@ -164,4 +164,4 @@ if __name__ == "__main__":
         # === Step 7: Save checkpoint
         server.save_model(iteration, malicious_client.trigger_set, malicious_client.mask_set)
 
-logger.info(f"Round {iteration} completed. FL finished.")
+logger.info(f"Round {iteration} completed - FL finished.")

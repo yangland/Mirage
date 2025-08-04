@@ -21,13 +21,25 @@ static_args = None
 def args_update(args=None, mkdir=True):
     with open(f"./{args.params}", "r", encoding="utf-8") as f:
         new_args = yaml.safe_load(f)
-    new_args.update(vars(args))
-    run_device = torch.device("cpu")
-    if torch.cuda.is_available():
-        run_device = torch.device(f"cuda:{new_args['gpu_id']}")
-        print(torch.cuda.get_device_name(run_device))
-    elif torch.backends.mps.is_available():
-        run_device = torch.device("mps")
+    # new_args.update(vars(args))
+    
+    # ✅ only add args from CLI if not already in YAML
+    for k, v in vars(args).items():
+        if k not in new_args:
+            new_args[k] = v
+
+    if "run_device" in new_args:
+        run_device = torch.device(new_args["run_device"])
+    else:
+        if torch.cuda.is_available():
+            run_device = torch.device("cuda:0")
+        elif torch.backends.mps.is_available():
+            run_device = torch.device("mps")
+        else:
+            run_device = torch.device("cpu")
+
+    new_args["run_device"] = run_device
+    print(Fore.GREEN + f"Running on device: {run_device}" + Fore.RESET)
 
     new_args["run_device"] = run_device
     # 保留位数的默认处理
