@@ -93,9 +93,10 @@ if __name__ == "__main__":
     possible_region_ids_list = list(range(1, 5))  # 4 regions
     
     tracker = BackdoorSurvivalTracker(
-    save_dir="results/backdoor_tracking",
-    region_ids=possible_region_ids_list
+        save_dir=params_loaded["folder_path"],
+        region_ids=possible_region_ids_list
     )
+
 
     for iteration in range(server.params["start_iteration"], server.params["end_iteration"]):
         logger.info(f"====================== Current Round: {iteration} ======================")
@@ -166,4 +167,4 @@ if __name__ == "__main__":
 
 # ==================== End of Training ====================
 # Save backdoor survival results
-tracker.save_csv(filename=f"backdoor_tracking_log_{params_loaded['defense_method']}.csv")
+tracker.save_csv(filename=f"{params_loaded['folder_path']}/backdoor_tracking_log_{params_loaded['defense_method']}.csv")

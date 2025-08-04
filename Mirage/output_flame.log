@@ -1,0 +1,235 @@
+nohup: ignoring input
+current path:./saved_logs/_Aug.03_08.54.44
+params_loaded["resumed_model"] - saved_models/ResNet18_cifar10_ptm_2000_benign.pt
+Params: {'run_device': device(type='cuda', index=0), 'resumed_model': 'saved_models/ResNet18_cifar10_ptm_2000_benign.pt', 'data_dir': './data', 'dataset': 'CIFAR10', 'load_data_from_pkl': False, 'pre_cache_data_path': 'data/pre_cached_data.pt.tar', 'save_on_iteration': [2010, 2020, 2030, 2040, 2050, 2060, 2070, 2080, 2090, 2100, 2150, 2200, 2250, 2300, 2350, 2400, 2450, 3000, 2099], 'benign_lr': 0.1, 'benign_momentum': 0.9, 'benign_weight_decay': 0.0005, 'benign_is_projection_grad': False, 'benign_projection_norm': 3, 'benign_retrain_no_times': 2, 'gamma': 1, 'target_lr': 0.02, 'lr_method': 'linear', 'poisoned_lr': 0.05, 'poisoned_momentum': 0.0, 'poisoned_weight_decay': 0.0005, 'poisoned_is_projection_grad': False, 'poisoned_projection_norm': 5, 'poisoned_retrain_no_times': 5, 'poisoned_iteration_interval': 1, 'malicious_aggregate_all_layer': 1, 'poison_task_name': 'pixel pattern', 'pixel_pattern': True, 'poison_train_batch_size': 64, 'norm_clip': False, 'fix_nc_bound': True, 'nc_bound': 2, 'agg_method': 'flame', 'Fedprox_mu': 0, 'sample_dirichlet': True, 'dirichlet_alpha': 1, 'train_batch_size': 64, 'test_batch_size': 1000, 'no_of_total_participants': 100, 'no_of_participants_per_iteration': 10, 'poisoned_pattern_choose': 2, 'blend_alpha': 0.3, 'poison_label_swap': [1, 2, 3, 4, 5, 6, 7, 8, 9, 0], 'round_ndigits': 4, 'poison_label_swap_by_region': {1: 1, 2: 3, 3: 5, 4: 7}, 'discriminator_train_samples_pre_class': 50, 'discriminator_batch_size': 64, 'discriminator_lr': 0.01, 'discriminator_momentum': 0.9, 'discriminator_weight_decay': 0.0005, 'discriminator_train_no_times': 30, 'trigger_search_no_times': 50, 'trigger_lr': 0.001, 'show_train_log': False, 'start_iteration': 2000, 'end_iteration': 2100, 'start_save_iteration': 9999, 'poisoned_start_iteration': 2000, 'poisoned_end_iteration': 2100, 'poisoned_len': 8, 'trigger_size': 5, 'seed': 123, 'malicious_train_algo': 'Mirage', 'defense_method': 'nodefense', 'benign_sample_for_region': 5, 'l2_radius_scale': 5.0, 'lambda_geo': 0.5, 'params': './yamls/Mirage/Mirage_flame.yaml', 'no_of_adversaries': 3, 'poison_type': 'continue_poison', 'attach': '', 'gpu_id': '0', 'model_type': 'ResNet18', 'folder_path': './saved_logs/_Aug.03_08.54.44', 'class_num': 10}
+Tesla V100-PCIE-32GB
+[32mRunning on device: cuda:0[39m
+Creating participant loaders:   0%|          | 0/100 [00:00<?, ?it/s]Creating participant loaders: 100%|██████████| 100/100 [00:00<00:00, 24818.37it/s]
+Loaded params from saved model, LR is 0.1 and current iteration is 2000
+====================== Current Round: 2000 ======================
+selected clients: [0, 1, 2, 31, 45, 42, 6, 73, 95, 9]
+adversary list: [0, 1, 2]
+[Round 2000] Assigned Client 0 to Region 1
+[Round 2000] Assigned Client 1 to Region 2
+[Round 2000] Assigned Client 2 to Region 3
+[Round 2000] Region assignments: {0: 1, 1: 2, 2: 3}
+Training on global iteration 2000 
+[DEBUG] --- Region Statistics Computation ---
+[DEBUG] # of benign models: 3
+[DEBUG] Mean pairwise L2 distance: 0.2950
+[DEBUG] Mean L2 norm of updates: 0.2047
+[DEBUG] Mean cos dist between updates: 1.01718928
+[DEBUG] Mean cos dist between weights: 0.00005577
+[Round 2000] Using externally provided region assignments: {0: 1, 1: 2, 2: 3}
+[Round 2000] selected_clients_list: [0, 1, 2, 31, 45, 42, 6, 73, 95, 9]
+creating model
+{'class_7: 286', 'class_4: 299', 'class_9: 203', 'class_3: 295', 'class_1: 287', 'class_5: 290', 'class_0: 299', 'class_6: 216', 'class_8: 217', 'class_2: 318'}
+{'class_7: 286', 'class_4: 299', 'class_9: 203', 'class_3: 295', 'class_1: 287', 'class_5: 290', 'class_0: 299', 'class_6: 216', 'class_8: 217', 'class_2: 318'}
+[DEBUG] Type of malicious_client: <class 'participants.clients.MirageClient.MirageClient'>
+  0%|          | 0/10 [00:00<?, ?it/s][DEBUG] Client 0 using 'region constraint' attack.
+
+  0%|          | 0/50 [00:00<?, ?it/s][A
+  2%|▏         | 1/50 [00:04<03:18,  4.05s/it][A
+  4%|▍         | 2/50 [00:10<04:31,  5.66s/it][A
+  6%|▌         | 3/50 [00:17<04:50,  6.19s/it][A
+  8%|▊         | 4/50 [00:24<04:52,  6.36s/it][A
+ 10%|█         | 5/50 [00:31<05:02,  6.72s/it][A
+ 12%|█▏        | 6/50 [00:39<05:06,  6.96s/it][A
+ 14%|█▍        | 7/50 [00:47<05:20,  7.45s/it][A
+ 16%|█▌        | 8/50 [00:56<05:35,  7.99s/it][A
+ 18%|█▊        | 9/50 [01:06<05:54,  8.64s/it][A
+ 20%|██        | 10/50 [01:17<06:17,  9.45s/it][A
+ 22%|██▏       | 11/50 [01:30<06:45, 10.41s/it][A
+ 24%|██▍       | 12/50 [01:44<07:12, 11.39s/it][A
+ 26%|██▌       | 13/50 [01:58<07:31, 12.19s/it][A
+ 28%|██▊       | 14/50 [02:12<07:38, 12.74s/it][A
+ 30%|███       | 15/50 [02:26<07:38, 13.09s/it][A
+ 32%|███▏      | 16/50 [02:39<07:31, 13.29s/it][A
+ 34%|███▍      | 17/50 [02:53<07:24, 13.48s/it][A
+ 36%|███▌      | 18/50 [03:07<07:12, 13.51s/it][A
+ 38%|███▊      | 19/50 [03:21<07:01, 13.60s/it][A
+ 40%|████      | 20/50 [03:35<06:50, 13.69s/it][A
+ 42%|████▏     | 21/50 [03:49<06:43, 13.90s/it][A
+ 44%|████▍     | 22/50 [04:03<06:29, 13.90s/it][A
+ 46%|████▌     | 23/50 [04:17<06:15, 13.92s/it][A
+ 48%|████▊     | 24/50 [04:32<06:07, 14.15s/it][A
+ 50%|█████     | 25/50 [04:45<05:48, 13.95s/it][A
+ 52%|█████▏    | 26/50 [05:00<05:39, 14.13s/it][A
+ 54%|█████▍    | 27/50 [05:13<05:22, 14.03s/it][A
+ 56%|█████▌    | 28/50 [05:27<05:07, 13.97s/it][A
+ 58%|█████▊    | 29/50 [05:41<04:53, 13.99s/it][A
+ 60%|██████    | 30/50 [05:55<04:39, 13.98s/it][A
+ 62%|██████▏   | 31/50 [06:09<04:24, 13.92s/it][A
+ 64%|██████▍   | 32/50 [06:23<04:10, 13.89s/it][A
+ 66%|██████▌   | 33/50 [06:37<03:55, 13.85s/it][A
+ 68%|██████▊   | 34/50 [06:50<03:41, 13.83s/it][A
+ 70%|███████   | 35/50 [07:04<03:25, 13.73s/it][A
+ 72%|███████▏  | 36/50 [07:18<03:13, 13.84s/it][A
+ 74%|███████▍  | 37/50 [07:32<03:00, 13.90s/it][A
+ 76%|███████▌  | 38/50 [07:46<02:47, 13.92s/it][A
+ 78%|███████▊  | 39/50 [08:00<02:32, 13.88s/it][A
+ 80%|████████  | 40/50 [08:13<02:16, 13.64s/it][A
+ 82%|████████▏ | 41/50 [08:26<02:02, 13.57s/it][A
+ 84%|████████▍ | 42/50 [08:40<01:48, 13.60s/it][A
+ 86%|████████▌ | 43/50 [08:54<01:35, 13.70s/it][A
+ 88%|████████▊ | 44/50 [09:08<01:22, 13.77s/it][A
+ 90%|█████████ | 45/50 [09:22<01:08, 13.79s/it][A
+ 92%|█████████▏| 46/50 [09:35<00:55, 13.81s/it][A
+ 94%|█████████▍| 47/50 [09:49<00:41, 13.75s/it][A
+ 96%|█████████▌| 48/50 [10:03<00:27, 13.77s/it][A
+ 98%|█████████▊| 49/50 [10:17<00:13, 13.74s/it][A
+100%|██████████| 50/50 [10:30<00:00, 13.76s/it][A100%|██████████| 50/50 [10:30<00:00, 12.62s/it]
+client: 0, l2 radius: 0.20466897885004678, update cone mode: 1
+ 10%|█         | 1/10 [10:40<1:36:03, 640.38s/it][DEBUG] Checking update flow for client 0
+Type of updated_model: <class 'models.resnet.ResNet'>
+Type of global_model: <class 'models.resnet.ResNet'>
+State dict keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+Update norm: tensor(0.20, device='cuda:0', grad_fn=<LinalgVectorNormBackward0>)
+[DEBUG] Client 0 update keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+[DEBUG] Client 1 using 'region constraint' attack.
+
+  0%|          | 0/50 [00:00<?, ?it/s][A
+  2%|▏         | 1/50 [00:04<03:38,  4.46s/it][A
+  4%|▍         | 2/50 [00:13<05:50,  7.31s/it][A
+  6%|▌         | 3/50 [00:22<06:09,  7.87s/it][A
+  8%|▊         | 4/50 [00:31<06:18,  8.23s/it][A
+ 10%|█         | 5/50 [00:39<06:18,  8.41s/it][A
+ 12%|█▏        | 6/50 [00:48<06:17,  8.57s/it][A
+ 14%|█▍        | 7/50 [00:57<06:12,  8.66s/it][A
+ 16%|█▌        | 8/50 [01:05<05:55,  8.47s/it][A
+ 18%|█▊        | 9/50 [01:13<05:37,  8.24s/it][A
+ 20%|██        | 10/50 [01:21<05:30,  8.27s/it][A
+ 22%|██▏       | 11/50 [01:30<05:30,  8.47s/it][A
+ 24%|██▍       | 12/50 [01:38<05:20,  8.42s/it][A
+ 26%|██▌       | 13/50 [01:46<05:07,  8.30s/it][A
+ 28%|██▊       | 14/50 [01:55<04:56,  8.24s/it][A
+ 30%|███       | 15/50 [02:03<04:49,  8.27s/it][A
+ 32%|███▏      | 16/50 [02:11<04:43,  8.33s/it][A
+ 34%|███▍      | 17/50 [02:19<04:30,  8.19s/it][A
+ 36%|███▌      | 18/50 [02:28<04:25,  8.29s/it][A
+ 38%|███▊      | 19/50 [02:37<04:22,  8.46s/it][A
+ 40%|████      | 20/50 [02:45<04:17,  8.60s/it][A
+ 42%|████▏     | 21/50 [02:54<04:11,  8.67s/it][A
+ 44%|████▍     | 22/50 [03:03<03:59,  8.56s/it][A
+ 46%|████▌     | 23/50 [03:11<03:51,  8.56s/it][A
+ 48%|████▊     | 24/50 [03:20<03:46,  8.70s/it][A
+ 50%|█████     | 25/50 [03:29<03:36,  8.68s/it][A
+ 52%|█████▏    | 26/50 [03:38<03:31,  8.81s/it][A
+ 54%|█████▍    | 27/50 [03:47<03:21,  8.78s/it][A
+ 56%|█████▌    | 28/50 [03:55<03:11,  8.71s/it][A
+ 58%|█████▊    | 29/50 [04:04<03:01,  8.65s/it][A
+ 60%|██████    | 30/50 [04:12<02:53,  8.65s/it][A
+ 62%|██████▏   | 31/50 [04:21<02:45,  8.73s/it][A
+ 64%|██████▍   | 32/50 [04:30<02:36,  8.72s/it][A
+ 66%|██████▌   | 33/50 [04:39<02:28,  8.74s/it][A
+ 68%|██████▊   | 34/50 [04:47<02:18,  8.63s/it][A
+ 70%|███████   | 35/50 [04:55<02:05,  8.36s/it][A
+ 72%|███████▏  | 36/50 [05:03<01:57,  8.43s/it][A
+ 74%|███████▍  | 37/50 [05:12<01:50,  8.52s/it][A
+ 76%|███████▌  | 38/50 [05:21<01:43,  8.64s/it][A
+ 78%|███████▊  | 39/50 [05:30<01:34,  8.58s/it][A
+ 80%|████████  | 40/50 [05:38<01:25,  8.58s/it][A
+ 82%|████████▏ | 41/50 [05:47<01:17,  8.60s/it][A
+ 84%|████████▍ | 42/50 [05:56<01:09,  8.70s/it][A
+ 86%|████████▌ | 43/50 [06:04<01:01,  8.72s/it][A
+ 88%|████████▊ | 44/50 [06:13<00:51,  8.61s/it][A
+ 90%|█████████ | 45/50 [06:21<00:42,  8.55s/it][A
+ 92%|█████████▏| 46/50 [06:30<00:34,  8.73s/it][A
+ 94%|█████████▍| 47/50 [06:39<00:25,  8.66s/it][A
+ 96%|█████████▌| 48/50 [06:48<00:17,  8.67s/it][A
+ 98%|█████████▊| 49/50 [06:56<00:08,  8.68s/it][A
+100%|██████████| 50/50 [07:05<00:00,  8.75s/it][A100%|██████████| 50/50 [07:05<00:00,  8.51s/it]
+client: 1, l2 radius: 1.023344894250234, update cone mode: 1
+ 20%|██        | 2/10 [17:52<1:09:04, 518.08s/it][DEBUG] Client 1 update keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+[DEBUG] Client 2 using 'region constraint' attack.
+
+  0%|          | 0/50 [00:00<?, ?it/s][A
+  2%|▏         | 1/50 [00:06<05:11,  6.37s/it][A
+  4%|▍         | 2/50 [00:18<07:55,  9.90s/it][A
+  6%|▌         | 3/50 [00:30<08:25, 10.75s/it][A
+  8%|▊         | 4/50 [00:41<08:19, 10.85s/it][A
+ 10%|█         | 5/50 [00:53<08:20, 11.11s/it][A
+ 12%|█▏        | 6/50 [01:04<08:19, 11.35s/it][A
+ 14%|█▍        | 7/50 [01:15<08:01, 11.21s/it][A
+ 16%|█▌        | 8/50 [01:27<07:57, 11.38s/it][A
+ 18%|█▊        | 9/50 [01:39<07:52, 11.53s/it][A
+ 20%|██        | 10/50 [01:50<07:32, 11.31s/it][A
+ 22%|██▏       | 11/50 [02:00<07:10, 11.04s/it][A
+ 24%|██▍       | 12/50 [02:11<07:02, 11.12s/it][A
+ 26%|██▌       | 13/50 [02:22<06:44, 10.92s/it][A
+ 28%|██▊       | 14/50 [02:33<06:37, 11.05s/it][A
+ 30%|███       | 15/50 [02:45<06:31, 11.19s/it][A
+ 32%|███▏      | 16/50 [02:56<06:24, 11.32s/it][A
+ 34%|███▍      | 17/50 [03:08<06:17, 11.44s/it][A
+ 36%|███▌      | 18/50 [03:20<06:07, 11.50s/it][A
+ 38%|███▊      | 19/50 [03:31<05:56, 11.50s/it][A
+ 40%|████      | 20/50 [03:43<05:45, 11.50s/it][A
+ 42%|████▏     | 21/50 [03:54<05:34, 11.54s/it][A
+ 44%|████▍     | 22/50 [04:06<05:23, 11.55s/it][A
+ 46%|████▌     | 23/50 [04:17<05:10, 11.52s/it][A
+ 48%|████▊     | 24/50 [04:29<04:59, 11.52s/it][A
+ 50%|█████     | 25/50 [04:41<04:48, 11.54s/it][A
+ 52%|█████▏    | 26/50 [04:52<04:38, 11.59s/it][A
+ 54%|█████▍    | 27/50 [05:04<04:26, 11.58s/it][A
+ 56%|█████▌    | 28/50 [05:15<04:14, 11.59s/it][A
+ 58%|█████▊    | 29/50 [05:27<04:03, 11.59s/it][A
+ 60%|██████    | 30/50 [05:39<03:52, 11.61s/it][A
+ 62%|██████▏   | 31/50 [05:50<03:39, 11.58s/it][A
+ 64%|██████▍   | 32/50 [06:02<03:28, 11.57s/it][A
+ 66%|██████▌   | 33/50 [06:13<03:17, 11.61s/it][A
+ 68%|██████▊   | 34/50 [06:25<03:05, 11.61s/it][A
+ 70%|███████   | 35/50 [06:37<02:53, 11.59s/it][A
+ 72%|███████▏  | 36/50 [06:49<02:46, 11.90s/it][A
+ 74%|███████▍  | 37/50 [07:01<02:34, 11.87s/it][A
+ 76%|███████▌  | 38/50 [07:13<02:24, 12.02s/it][A
+ 78%|███████▊  | 39/50 [07:24<02:09, 11.73s/it][A
+ 80%|████████  | 40/50 [07:36<01:55, 11.57s/it][A
+ 82%|████████▏ | 41/50 [07:46<01:41, 11.27s/it][A
+ 84%|████████▍ | 42/50 [07:57<01:29, 11.18s/it][A
+ 86%|████████▌ | 43/50 [08:08<01:17, 11.10s/it][A
+ 88%|████████▊ | 44/50 [08:20<01:08, 11.34s/it][A
+ 90%|█████████ | 45/50 [08:32<00:57, 11.41s/it][A
+ 92%|█████████▏| 46/50 [08:43<00:45, 11.47s/it][A
+ 94%|█████████▍| 47/50 [08:55<00:34, 11.61s/it][A
+ 96%|█████████▌| 48/50 [09:07<00:23, 11.59s/it][A
+ 98%|█████████▊| 49/50 [09:18<00:11, 11.52s/it][A
+100%|██████████| 50/50 [09:29<00:00, 11.23s/it][A100%|██████████| 50/50 [09:29<00:00, 11.38s/it]
+client: 2, l2 radius: 0.20466897885004678, update cone mode: -1
+[Iteration 2000] Client 2 violates geo constraint. cos_dist = 0.9868, threshold = 1.0000. Starting binary search sign flipping.
+[Fix] Client 2 — Constraint fixed with bottom 90% sign flipping.
+ 30%|███       | 3/10 [27:32<1:03:42, 546.11s/it] 40%|████      | 4/10 [27:34<33:07, 331.27s/it]   50%|█████     | 5/10 [27:35<17:41, 212.34s/it] 60%|██████    | 6/10 [27:37<09:23, 140.85s/it] 70%|███████   | 7/10 [27:39<04:46, 95.37s/it]  80%|████████  | 8/10 [27:41<02:11, 65.53s/it] 90%|█████████ | 9/10 [27:42<00:45, 45.53s/it]100%|██████████| 10/10 [27:43<00:00, 31.73s/it]100%|██████████| 10/10 [27:43<00:00, 166.35s/it]
+Client 0 update norm: 0.204669
+Client 1 update norm: 1.023345
+Client 2 update norm: 0.204669
+Client 31 update norm: 0.314138
+Client 45 update norm: 0.199989
+Client 42 update norm: 0.21875
+Client 6 update norm: 0.255721
+Client 73 update norm: 0.282704
+Client 95 update norm: 0.23447
+Client 9 update norm: 0.20669
+/home1/liyang/miniconda3/envs/fl310/lib/python3.10/site-packages/sklearn/utils/deprecation.py:151: FutureWarning: 'force_all_finite' was renamed to 'ensure_all_finite' in 1.6 and will be removed in 1.8.
+  warnings.warn(
+/home1/liyang/miniconda3/envs/fl310/lib/python3.10/site-packages/sklearn/utils/deprecation.py:151: FutureWarning: 'force_all_finite' was renamed to 'ensure_all_finite' in 1.6 and will be removed in 1.8.
+  warnings.warn(
+[DEBUG] Client 2 update keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+[DEBUG] Client 31 update keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+[DEBUG] Client 45 update keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+[DEBUG] Client 42 update keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+[DEBUG] Client 6 update keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+[DEBUG] Client 73 update keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+[DEBUG] Client 95 update keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+[DEBUG] Client 9 update keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']
+[DEBUG] Global model keys: ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var', 'bn1.num_batches_tracked', 'layer1.0.conv1.weight', 'layer1.0.bn1.weight', 'layer1.0.bn1.bias', 'layer1.0.bn1.running_mean', 'layer1.0.bn1.running_var', 'layer1.0.bn1.num_batches_tracked', 'layer1.0.conv2.weight', 'layer1.0.bn2.weight', 'layer1.0.bn2.bias', 'layer1.0.bn2.running_mean', 'layer1.0.bn2.running_var', 'layer1.0.bn2.num_batches_tracked', 'layer1.1.conv1.weight', 'layer1.1.bn1.weight', 'layer1.1.bn1.bias', 'layer1.1.bn1.running_mean', 'layer1.1.bn1.running_var', 'layer1.1.bn1.num_batches_tracked', 'layer1.1.conv2.weight', 'layer1.1.bn2.weight', 'layer1.1.bn2.bias', 'layer1.1.bn2.running_mean', 'layer1.1.bn2.running_var', 'layer1.1.bn2.num_batches_tracked', 'layer2.0.conv1.weight', 'layer2.0.bn1.weight', 'layer2.0.bn1.bias', 'layer2.0.bn1.running_mean', 'layer2.0.bn1.running_var', 'layer2.0.bn1.num_batches_tracked', 'layer2.0.conv2.weight', 'layer2.0.bn2.weight', 'layer2.0.bn2.bias', 'layer2.0.bn2.running_mean', 'layer2.0.bn2.running_var', 'layer2.0.bn2.num_batches_tracked', 'layer2.0.shortcut.0.weight', 'layer2.0.shortcut.1.weight', 'layer2.0.shortcut.1.bias', 'layer2.0.shortcut.1.running_mean', 'layer2.0.shortcut.1.running_var', 'layer2.0.shortcut.1.num_batches_tracked', 'layer2.1.conv1.weight', 'layer2.1.bn1.weight', 'layer2.1.bn1.bias', 'layer2.1.bn1.running_mean', 'layer2.1.bn1.running_var', 'layer2.1.bn1.num_batches_tracked', 'layer2.1.conv2.weight', 'layer2.1.bn2.weight', 'layer2.1.bn2.bias', 'layer2.1.bn2.running_mean', 'layer2.1.bn2.running_var', 'layer2.1.bn2.num_batches_tracked', 'layer3.0.conv1.weight', 'layer3.0.bn1.weight', 'layer3.0.bn1.bias', 'layer3.0.bn1.running_mean', 'layer3.0.bn1.running_var', 'layer3.0.bn1.num_batches_tracked', 'layer3.0.conv2.weight', 'layer3.0.bn2.weight', 'layer3.0.bn2.bias', 'layer3.0.bn2.running_mean', 'layer3.0.bn2.running_var', 'layer3.0.bn2.num_batches_tracked', 'layer3.0.shortcut.0.weight', 'layer3.0.shortcut.1.weight', 'layer3.0.shortcut.1.bias', 'layer3.0.shortcut.1.running_mean', 'layer3.0.shortcut.1.running_var', 'layer3.0.shortcut.1.num_batches_tracked', 'layer3.1.conv1.weight', 'layer3.1.bn1.weight', 'layer3.1.bn1.bias', 'layer3.1.bn1.running_mean', 'layer3.1.bn1.running_var', 'layer3.1.bn1.num_batches_tracked', 'layer3.1.conv2.weight', 'layer3.1.bn2.weight', 'layer3.1.bn2.bias', 'layer3.1.bn2.running_mean', 'layer3.1.bn2.running_var', 'layer3.1.bn2.num_batches_tracked', 'layer4.0.conv1.weight', 'layer4.0.bn1.weight', 'layer4.0.bn1.bias', 'layer4.0.bn1.running_mean', 'layer4.0.bn1.running_var', 'layer4.0.bn1.num_batches_tracked', 'layer4.0.conv2.weight', 'layer4.0.bn2.weight', 'layer4.0.bn2.bias', 'layer4.0.bn2.running_mean', 'layer4.0.bn2.running_var', 'layer4.0.bn2.num_batches_tracked', 'layer4.0.shortcut.0.weight', 'layer4.0.shortcut.1.weight', 'layer4.0.shortcut.1.bias', 'layer4.0.shortcut.1.running_mean', 'layer4.0.shortcut.1.running_var', 'layer4.0.shortcut.1.num_batches_tracked', 'layer4.1.conv1.weight', 'layer4.1.bn1.weight', 'layer4.1.bn1.bias', 'layer4.1.bn1.running_mean', 'layer4.1.bn1.running_var', 'layer4.1.bn1.num_batches_tracked', 'layer4.1.conv2.weight', 'layer4.1.bn2.weight', 'layer4.1.bn2.bias', 'layer4.1.bn2.running_mean', 'layer4.1.bn2.running_var', 'layer4.1.bn2.num_batches_tracked', 'linear.weight', 'linear.bias']
+Traceback (most recent call last):
+  File "/home1/liyang/GitHub/Mirage/Mirage/main.py", line 138, in <module>
+    server.aggregation(agg_method=params_loaded["agg_method"],
+  File "/home1/liyang/GitHub/Mirage/Mirage/participants/servers/BasicServer.py", line 453, in aggregation
+    aggregated_update = aggregate_global_model(
+  File "/home1/liyang/GitHub/Mirage/Mirage/aggr/__init__.py", line 41, in aggregate_global_model
+    return SUPPORTED_AGG_METHODS[agg_method](
+  File "/home1/liyang/GitHub/Mirage/Mirage/aggr/flame.py", line 29, in flame_aggr
+    new_server_sd, flame_clients = flame(server_model_state_dict, reveled_model_dict, noise, client_ids, exp_dir, iter)
+  File "/home1/liyang/GitHub/Mirage/Mirage/aggr/flame.py", line 147, in flame
+    new_server_update = fedavg([update_params[i] for i in benign_idx])
+TypeError: fedavg() missing 1 required positional argument: 'client_updates_dict'

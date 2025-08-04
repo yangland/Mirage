@@ -50,7 +50,7 @@ fix_nc_bound: True
 nc_bound: 2
 
 ### Server Setting
-agg_method: fedavg
+agg_method: geo
 Fedprox_mu: 0 #0.5
 
 
