@@ -5,7 +5,7 @@ import logging
 import os
 
 import math
-
+import shutil  # Add this import at the top if not already there
 import numpy as np
 import torch
 import yaml
@@ -37,7 +37,8 @@ def args_update(args=None, mkdir=True):
     print(Fore.GREEN + f"Running on device: {run_device}" + Fore.RESET)
 
     current_time = datetime.datetime.now().strftime("%b.%d_%H.%M.%S")
-    new_args["folder_path"] = f"./saved_logs/{new_args['attach']}_{current_time}"
+    agg_method = new_args["agg_method"].lower()
+    new_args["folder_path"] = f"./saved_logs/{new_args['attach']}_{current_time}_{agg_method}"
     new_args["save_on_iteration"].append(new_args["end_iteration"] - 1)
     if mkdir:
         try:
@@ -48,6 +49,12 @@ def args_update(args=None, mkdir=True):
         logger.addHandler(logging.StreamHandler())
         logger.setLevel(logging.INFO)
         logger.info(f"current path:{new_args['folder_path']}")
+        
+        # Copy the YAML file into the folder path for reference
+        yaml_dest_path = os.path.join(new_args["folder_path"], os.path.basename(args.params))
+        shutil.copy(f"./{args.params}", yaml_dest_path)
+        logger.info(f"Copied YAML config to: {yaml_dest_path}")
+
     # 给全局变量赋值
     global static_args
     static_args = new_args

@@ -448,6 +448,18 @@ class \
                     print(f"[ERROR] Client {client_id} update param {k} is not a Tensor: {type(v)}")
                     raise TypeError(f"[ERROR] Invalid param in update for client {client_id}")
 
+        # === Determine additional params for Krum-based methods
+        extra_args = {}
+        num_clients = len(client_grad_dict)
+
+        if agg_method in ["krum", "multi-krum"]:
+            f = num_clients // 2 - 1  # Byzantine tolerance
+            m = num_clients - f - 2   # For multi-krum, number of selected updates
+            extra_args["f"] = f
+            if agg_method == "multi-krum":
+                extra_args["m"] = m
+
+            print(f"[INFO] Using {agg_method} with f={f}" + (f", m={m}" if agg_method == "multi-krum" else ""))
 
         # === Call aggregation dispatcher
         aggregated_update = aggregate_global_model(

@@ -97,7 +97,6 @@ if __name__ == "__main__":
         region_ids=possible_region_ids_list
     )
 
-
     for iteration in range(server.params["start_iteration"], server.params["end_iteration"]):
         logger.info(f"====================== Current Round: {iteration} ======================")
 
