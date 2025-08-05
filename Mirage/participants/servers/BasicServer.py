@@ -2,10 +2,11 @@ import copy
 import logging
 import random
 import numpy as np
-
+import os
 import torch
 import torch.nn as nn
 import torchvision.models
+from torch.nn import functional as F
 
 import models.resnet
 import models.vgg
@@ -228,7 +229,7 @@ class \
     #     return acc, loss
 
 
-    def test_global_model(self, iteration, malicious_clients, possible_region_ids=None, client_region_mapping=None):
+    def test_global_model(self, iteration, malicious_clients, possible_region_ids=None, client_region_mapping=None, show_tsne=False):
         """
         Evaluate the global model: clean accuracy and ASR per region.
         Returns a dictionary with clean accuracy/loss and ASR info.
@@ -291,6 +292,13 @@ class \
             for region_id in possible_region_ids:
                 if region_id in results["asr"]:
                     logger.info(f"ASR of region {region_id}: {results['asr'][region_id]['asr'] * 100:.2f}%")
+
+        # Optional: TSNE visualization
+        if show_tsne and (iteration % 10 == 0 or (
+                self.params["malicious_train_algo"] == "Mirage"
+                and iteration % 3 == 0
+                and iteration - self.params["start_save_iteration"] <= 101)):
+            self._visualize_tsne(iteration, malicious_clients)
 
         return results
 
@@ -476,4 +484,66 @@ class \
             # param.add_(aggregated_update[name].to(param.device))
             update_tensor = aggregated_update[name].to(dtype=param.dtype, device=param.device)
             param.add_(update_tensor)
+
+
+    def _visualize_tsne(self, iteration, malicious_clients):
+        """
+        Visualize feature embeddings using t-SNE for selected clients.
+        """
+        logger.info(f"[TSNE] Visualizing feature embeddings at iteration {iteration}...")
+
+        device = next(self.model.parameters()).device
+
+        # === Collect features and labels from all or selected clients ===
+        # For simplicity, use the test set (or a subset of it)
+        features, labels = extract_features(self.model, self.test_dataloader, device)
+
+        # === Optionally modify or tag labels to distinguish client types ===
+        # Example: Label malicious clients with 100+region_id to distinguish
+        if hasattr(malicious_clients, "client_region_mapping"):
+            for region_id in malicious_clients.trigger_set_by_region.keys():
+                indices = (labels == region_id)
+                labels[indices] = 100 + region_id  # Mark as malicious for color coding
+
+        # === Create save directory if needed ===
+        save_path = os.path.join(self.params.get("folder_path", "."), "tsne")
+        os.makedirs(save_path, exist_ok=True)
+
+        # === Call visualization function ===
+        visualize_tsne(
+            features=features,
+            labels_tensor=labels,
+            attaches=f"iter{iteration}",
+            save_path=save_path
+        )
+
+        logger.info(f"[TSNE] Saved t-SNE plot at iteration {iteration} to {save_path}")
+
+
+def extract_features(model, dataloader, device):
+    """
+    Helper function to extract features and labels from a model and dataloader.
+    Assumes model returns feature vectors from penultimate layer.
+    """
+    model.eval()
+    features = []
+    labels = []
+
+    with torch.no_grad():
+        for batch in dataloader:
+            x, y = batch[0].to(device), batch[1].to(device)
+            output = model.extract_features(x) if hasattr(model, "extract_features") else model(x)
+
+            features.append(output)
+            labels.append(y)
+
+            # Optional: limit number of batches to speed up tsne
+            if len(features) >= 5:  # limit to 5 batches
+                break
+
+    return torch.cat(features), torch.cat(labels)
+    
+    
+
+
 

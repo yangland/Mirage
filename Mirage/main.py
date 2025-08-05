@@ -145,7 +145,8 @@ if __name__ == "__main__":
                                                         iteration=iteration,
                                                         malicious_clients=malicious_client,
                                                         possible_region_ids=possible_region_ids_list,
-                                                        client_region_mapping=client_region_mapping
+                                                        client_region_mapping=client_region_mapping,
+                                                        show_tsne= params_loaded.get("show_tsne", False)
                                                     )
         # log the results in CSV file
         attacked_regions = list(set(client_region_mapping.values()))
