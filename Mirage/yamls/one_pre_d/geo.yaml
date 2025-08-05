@@ -1,5 +1,5 @@
 # vanilla attack with pixel block trigger no defense yaml
-run_device: cuda:1
+run_device: cuda:2
 resumed_model: saved_models/ResNet18_cifar10_ptm_2000_benign.pt
 data_dir:   ./data
 dataset: cifar10
@@ -50,7 +50,7 @@ fix_nc_bound: True
 nc_bound: 2
 
 ### Server Setting
-agg_method: krum
+agg_method: geo
 Fedprox_mu: 0 #0.5
 no_of_adversaries: 4
 
@@ -62,6 +62,10 @@ train_batch_size: 64
 test_batch_size: 1000
 no_of_total_participants: 100
 no_of_participants_per_iteration: 10
+no_of_total_adversaries: 4
+no_of_adversaries_per_iter: 1
+clients_region_map: "pre_defined"  # or "random", "by_order"
+predefined_id_set: [[1], [4], [2], [3]]  # Only used if clients_region_map == "pre_defined"
 
 
 poisoned_pattern_choose: 2 #1 (pixel), 2 (blend),
@@ -73,6 +77,7 @@ poison_label_swap_by_region:
   2: 3
   3: 5
   4: 7
+
 
 
 ### for Mirage
