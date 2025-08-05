@@ -137,7 +137,7 @@ class BasicClient():
         mask_list = []
         dataloader = self.train_dataloader[1]
         sample_data = next(iter(dataloader))[0][0]
-        n_adversaries = self.params["no_of_adversaries"]
+        n_adversaries = self.params["no_of_total_adversaries"]
         if self.params["poisoned_pattern_choose"] == 1:  # 固定位置触发器，pixel (3,3) , fixed trigger
             self.trigger_set = []
             for i in range(n_adversaries):
@@ -168,7 +168,7 @@ class BasicClient():
             self.mask_set = []
             dataloader = self.train_dataloader[1]
             sample_data = next(iter(dataloader))[0][0]
-            n_adversaries = self.params["no_of_adversaries"]
+            n_adversaries = self.params["no_of_total_adversaries"]
             for i in range(n_adversaries):
                 if self.params["malicious_train_algo"] == "A3FL" or self.params["malicious_train_algo"] == "Mirage":
                     trigger = torch.ones(sample_data.shape, device=self.params["run_device"]) * 0.5

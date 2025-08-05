@@ -25,10 +25,10 @@ class No_defense_Server(BasicServer):
 
     #     selected_clients_list, malicious_clients_list = self.select_clients(iteration)
     #     ''' 记录当前的训练中，有多少个恶意客户端'''
-    #     current_no_of_adversaries = 0
+    #     current_no_of_total_adversaries = 0
     #     for client_id in selected_clients_list:
     #         if client_id in malicious_clients_list:
-    #             current_no_of_adversaries += 1
+    #             current_no_of_total_adversaries += 1
 
 
     #     weight_accumulator = self.create_weight_accumulator()  # 初始化权重累加器, dict类型

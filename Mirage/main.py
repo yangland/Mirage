@@ -19,7 +19,7 @@ from participants.servers.No_defense_Server import No_defense_Server
 
 from utils.utils import args_update, assign_regions_to_malicious
 from utils.visualize import visualize_batch
-from utils.backdoor_survival_tracker import BackdoorSurvivalTracker
+from utils.backdoor_survival_tracker import BackdoorSurvivalTracker, log_backdoor_tracking_csv
 
 logger = logging.getLogger("logger")
 
@@ -36,7 +36,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     yaml_file = "yamls/Mirage/Mirage_nodefense.yaml"
     parser.add_argument("--params", default=f"{yaml_file}", type=str)
-    # parser.add_argument("--no_of_adversaries", default=3, type=int)
+    # parser.add_argument("--no_of_total_adversaries", default=3, type=int)
     #  full_random  sequential_poison continue_poison
     parser.add_argument("--poison_type", default="continue_poison", type=str)
     parser.add_argument("--attach", default="", type=str)
@@ -89,9 +89,13 @@ if __name__ == "__main__":
         
     print(f"[DEBUG] Type of malicious_client: {type(malicious_client)}")
 
-    all_malicious_clients_ids = [malicious_client for _ in range(params_loaded["no_of_adversaries"])]
+    # all_malicious_clients_ids = [malicious_client for _ in range(params_loaded["no_of_total_adversaries"])]
     possible_region_ids_list = list(range(1, 5))  # 4 regions
-    
+    # Region-to-client mapping for ASR evaluation
+    # Client 0 is the one we use to test Region 1’s ASR, Client 1 is for Region 2, etc.
+    persistent_region_to_client_mapping = {1: 0, 2: 1, 3: 2, 4: 3}
+    region_to_test_client = {}
+
     tracker = BackdoorSurvivalTracker(
         save_dir=params_loaded["folder_path"],
         region_ids=possible_region_ids_list,
@@ -113,13 +117,18 @@ if __name__ == "__main__":
             malicious_clients_list=selected_malicious_clients,
             iteration=iteration,
             possible_region_ids=possible_region_ids_list,
-            server=server
+            server=server,
+            strategy=params_loaded.get("clients_region_map", "by_order"),
+            predefined_id_set=params_loaded.get("predefined_id_set", None)
         )
         logger.info(f"[Round {iteration}] Region assignments: {client_region_mapping}")
+        
+        region_to_test_client.update(client_region_mapping)
         
         # === Step 4: Preprocess + client uploads
         server.pre_process(test_data=server.test_dataloader, iteration=iteration)
 
+        # include poisoned clients
         (
             weight_accumulator,
             weight_accumulator_by_client,
@@ -135,8 +144,10 @@ if __name__ == "__main__":
 
         # === Step 5: Aggregate model
         # print(f"[DEBUG] Global model keys: {list(server.global_model.state_dict().keys())}")
-        server.aggregation(agg_method=params_loaded["agg_method"],
-                           weight_accumulator_by_client=weight_accumulator_by_client)
+        server.aggregation(
+                    agg_method=params_loaded["agg_method"],
+                    weight_accumulator_by_client=weight_accumulator_by_client
+                    )
         
         logger.info(f"aggregated_model: {aggregated_model_id}")
 
@@ -145,22 +156,18 @@ if __name__ == "__main__":
                                                         iteration=iteration,
                                                         malicious_clients=malicious_client,
                                                         possible_region_ids=possible_region_ids_list,
-                                                        client_region_mapping=client_region_mapping,
+                                                        client_region_mapping=region_to_test_client,
                                                         show_tsne= params_loaded.get("show_tsne", False)
                                                     )
         # log the results in CSV file
-        attacked_regions = list(set(client_region_mapping.values()))
+        log_backdoor_tracking_csv(
+                                    tracker=tracker,
+                                    iteration=iteration,
+                                    global_eval_results=global_eval_results,
+                                    client_region_mapping=client_region_mapping,
+                                    possible_region_ids_list=possible_region_ids_list
+                                )
 
-        region_id_to_asr = {
-            rid: global_eval_results["asr"].get(rid, {}).get("asr", 0.0)
-            for rid in possible_region_ids_list
-        }
-
-        tracker.log_iter_csv(
-            iteration=iteration,
-            region_id_to_asr=region_id_to_asr,
-            attacked_regions=attacked_regions
-        )
         
         # === Step 7: Save checkpoint
         server.save_model(iteration, malicious_client.trigger_set, malicious_client.mask_set)

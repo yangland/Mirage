@@ -3,6 +3,7 @@ import datetime
 import itertools
 import logging
 import os
+import random
 
 import math
 import shutil  # Add this import at the top if not already there
@@ -215,84 +216,81 @@ def update_weight_accumulator(model, global_model, weight_accumulator, weight=1.
     return weight_accumulator, single_weight_accumulator
 
 
-# def evaluate_asr_before_aggregation(server, malicious_models_by_id, region_assignments, malicious_client, params):
-#     """
-#     Compute ASR before aggregation for each region.
-#     Returns: dict {region_id: avg_asr}
-#     """
-#     region_id_to_asrs = {}
+# def assign_regions_to_malicious(selected_clients_list, malicious_clients_list,
+#                                 iteration, possible_region_ids=[1, 2, 3, 4], server=None):
+#     region_assignments = {}
+#     ids = possible_region_ids
+#     num_regions = len(ids)
+#     malicious_clients_this_round = [cid for cid in selected_clients_list if cid in malicious_clients_list]
 
-#     for client_id, model in malicious_models_by_id.items():
-#         region_id = region_assignments[client_id]
-#         trigger = malicious_client.trigger_set[client_id]
-#         mask = malicious_client.mask_set[client_id]
-#         label_swap = params["poison_label_swap"][client_id]
+#     for client_id in malicious_clients_this_round:
+#         region_id = ids[server.region_index % num_regions]
+#         region_assignments[client_id] = region_id
+#         logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id}")
+#         server.region_index += 1  # Increment after each assignment
 
-#         asr, _ = server.test_model_once(
-#             iteration=None,
-#             test_dataloader=server.test_dataloader,
-#             is_poisoned=True,
-#             model=model,
-#             trigger=trigger,
-#             mask=mask,
-#             label_swap=label_swap
-#         )
-
-#         region_id_to_asrs.setdefault(region_id, []).append(asr)
-
-#     # Average ASR per region
-#     avg_asr_before = {
-#         region_id: sum(asrs) / len(asrs) if len(asrs) > 0 else 0.0
-#         for region_id, asrs in region_id_to_asrs.items()
-#     }
-
-#     return avg_asr_before
+#     return region_assignments
 
 
-# def evaluate_asr_after_aggregation(server, region_assignments, malicious_client, params):
-#     """
-#     Compute ASR after aggregation for each region.
-#     Returns: dict {region_id: avg_asr}
-#     """
-#     region_id_to_asrs = {}
+def assign_regions_to_malicious(
+    selected_clients_list,
+    malicious_clients_list,
+    iteration,
+    possible_region_ids,
+    server,
+    strategy="by_order",
+    predefined_id_set=None
+):
+    """
+    Assign region IDs to selected malicious clients using different strategies.
 
-#     for client_id, region_id in region_assignments.items():
-#         trigger = malicious_client.trigger_set[client_id]
-#         mask = malicious_client.mask_set[client_id]
-#         label_swap = params["poison_label_swap"][client_id]
-
-#         asr, _ = server.test_model_once(
-#             iteration=None,
-#             test_dataloader=server.test_dataloader,
-#             is_poisoned=True,
-#             model=None,  # use global model
-#             trigger=trigger,
-#             mask=mask,
-#             label_swap=label_swap
-#         )
-
-#         region_id_to_asrs.setdefault(region_id, []).append(asr)
-
-#     # Average ASR per region
-#     avg_asr_after = {
-#         region_id: sum(asrs) / len(asrs) if len(asrs) > 0 else 0.0
-#         for region_id, asrs in region_id_to_asrs.items()
-#     }
-
-#     return avg_asr_after
-
-
-def assign_regions_to_malicious(selected_clients_list, malicious_clients_list,
-                                iteration, possible_region_ids=[1, 2, 3, 4], server=None):
+    Returns:
+        dict[int, int]: Mapping from malicious client ID to region ID.
+    """
     region_assignments = {}
     ids = possible_region_ids
     num_regions = len(ids)
+
+    # Filter clients that are actually malicious this round
     malicious_clients_this_round = [cid for cid in selected_clients_list if cid in malicious_clients_list]
 
-    for client_id in malicious_clients_this_round:
-        region_id = ids[server.region_index % num_regions]
-        region_assignments[client_id] = region_id
-        logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id}")
-        server.region_index += 1  # Increment after each assignment
+    if strategy == "by_order":
+        for client_id in malicious_clients_this_round:
+            region_id = ids[server.region_index % num_regions]
+            region_assignments[client_id] = region_id
+            logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id} (by_order)")
+            server.region_index += 1
+
+    elif strategy == "random":
+        region_choices = random.sample(ids, len(malicious_clients_this_round))
+        for client_id, region_id in zip(malicious_clients_this_round, region_choices):
+            region_assignments[client_id] = region_id
+            logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id} (random)")
+
+    elif strategy == "pre_defined":
+        if predefined_id_set is None:
+            raise ValueError("predefined_id_set must be provided for 'pre_defined' strategy.")
+
+        # Calculate relative round index
+        round_idx = (iteration - server.params["start_iteration"]) % len(predefined_id_set)
+
+        if round_idx >= len(predefined_id_set):
+            raise ValueError(f"predefined_id_set only has {len(predefined_id_set)} entries, but got round {round_idx}")
+
+        regions_to_assign = predefined_id_set[round_idx]
+
+        if len(regions_to_assign) != len(malicious_clients_this_round):
+            raise ValueError(
+                f"Mismatch: {len(malicious_clients_this_round)} malicious clients, "
+                f"but {len(regions_to_assign)} regions in predefined_id_set[{round_idx}]"
+            )
+
+        for client_id, region_id in zip(malicious_clients_this_round, regions_to_assign):
+            region_assignments[client_id] = region_id
+            logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id} (pre_defined)")
+
+    else:
+        raise ValueError(f"Unknown clients_region_map strategy: {strategy}")
 
     return region_assignments
+

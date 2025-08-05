@@ -52,7 +52,6 @@ nc_bound: 2
 ### Server Setting
 agg_method: fedavg
 Fedprox_mu: 0 #0.5
-no_of_adversaries: 4
 
 
 sample_dirichlet: True
@@ -62,6 +61,10 @@ train_batch_size: 64
 test_batch_size: 1000
 no_of_total_participants: 100
 no_of_participants_per_iteration: 10
+no_of_total_adversaries: 4
+no_of_adversaries_per_iter: 2
+clients_region_map: "pre_defined"  # or "random", "by_order"
+predefined_id_set: [[1, 4], [2, 3]]  # Only used if clients_region_map == "pre_defined"
 
 
 poisoned_pattern_choose: 2 #1 (pixel), 2 (blend),
@@ -103,6 +106,6 @@ defense_method: nodefense
 # Region Setting
 benign_sample_for_region: 5
 l2_scale_min: 1.5
-l2_scale_max: 10.0
+l2_scale_max: 5.0
 cos_scale_min: 1.0
 lambda_geo: 0.5
