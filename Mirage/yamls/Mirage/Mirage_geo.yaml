@@ -52,7 +52,7 @@ nc_bound: 2
 ### Server Setting
 agg_method: geo
 Fedprox_mu: 0 #0.5
-
+no_of_adversaries: 4
 
 
 sample_dirichlet: True
@@ -102,5 +102,7 @@ defense_method: nodefense
 
 # Region Setting
 benign_sample_for_region: 5
-l2_radius_scale: 5.0
+l2_scale_min: 1.5
+l2_scale_max: 10.0
+cos_scale_min: 1.0
 lambda_geo: 0.5

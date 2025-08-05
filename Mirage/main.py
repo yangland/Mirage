@@ -36,7 +36,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     yaml_file = "yamls/Mirage/Mirage_nodefense.yaml"
     parser.add_argument("--params", default=f"{yaml_file}", type=str)
-    parser.add_argument("--no_of_adversaries", default=3, type=int)
+    # parser.add_argument("--no_of_adversaries", default=3, type=int)
     #  full_random  sequential_poison continue_poison
     parser.add_argument("--poison_type", default="continue_poison", type=str)
     parser.add_argument("--attach", default="", type=str)
@@ -134,7 +134,7 @@ if __name__ == "__main__":
         )
 
         # === Step 5: Aggregate model
-        print(f"[DEBUG] Global model keys: {list(server.global_model.state_dict().keys())}")
+        # print(f"[DEBUG] Global model keys: {list(server.global_model.state_dict().keys())}")
         server.aggregation(agg_method=params_loaded["agg_method"],
                            weight_accumulator_by_client=weight_accumulator_by_client)
         

@@ -48,13 +48,20 @@ def get_region_id(in_l2, in_update_cone, in_weight_cone):
     return (in_weight_cone << 2) | (in_update_cone << 1) | in_l2
 
 
-def build_region_constraints(stats, l2_radius_scale=5.0):
+def build_region_constraints(
+    stats,
+    l2_scale_min=1.5,
+    l2_scale_max=10.0,
+    cos_scale_min=0.75
+):
     """
     Build constraint dicts for regions R1–R4 using L2 and cosine constraints.
-    
+
     Args:
         stats: Dictionary with benign model statistics (from compute_benign_statistics)
-        l2_radius_scale: Scaling factor for r_max (e.g., 5 or 10)
+        l2_scale_min: Minimum scaling factor for L2 norm (e.g., 1.5)
+        l2_scale_max: Maximum scaling factor for L2 norm (e.g., 10)
+        cos_scale_min: Scaling factor for cosine threshold (e.g., 0.75)
 
     Returns:
         Dictionary mapping region_id to constraint dict
@@ -65,15 +72,18 @@ def build_region_constraints(stats, l2_radius_scale=5.0):
     avg_benign_model = stats["avg_benign_model"]
     avg_L2_norm = stats["avg_L2_norm"]
     avg_cosine_distance = stats["avg_update_cos_d"]
-    r_max = avg_L2_norm * l2_radius_scale
 
-    # === Region R1: Small norm, aligned (update_cone_mode = 1) ===
+    r_min = avg_L2_norm * l2_scale_min
+    r_max = avg_L2_norm * l2_scale_max
+    cosine_threshold = avg_cosine_distance * cos_scale_min
+
+    # === Region R1: Small norm, aligned ===
     constraints[1] = {
         "region_id": 1,
         "avg_benign_weight": avg_benign_model,
-        "l2_radius": avg_L2_norm,
+        "l2_radius": r_min,
         "update_cone_mode": 1,
-        "cosine_threshold": avg_cosine_distance,
+        "cosine_threshold": cosine_threshold,
     }
 
     # === Region R2: Large norm, aligned ===
@@ -82,14 +92,14 @@ def build_region_constraints(stats, l2_radius_scale=5.0):
         "avg_benign_weight": avg_benign_model,
         "l2_radius": r_max,
         "update_cone_mode": 1,
-        "cosine_threshold": avg_cosine_distance,
+        "cosine_threshold": cosine_threshold,
     }
 
     # === Region R3: Small norm, opposite direction ===
     constraints[3] = {
         "region_id": 3,
         "avg_benign_weight": avg_benign_model,
-        "l2_radius": avg_L2_norm,
+        "l2_radius": r_min,
         "update_cone_mode": -1,
         "cosine_threshold": 1.0,
     }
@@ -106,7 +116,8 @@ def build_region_constraints(stats, l2_radius_scale=5.0):
     return constraints
 
 
-def search_k_percent_to_fix_geometry(delta_theta, delta_b, update_cone_mode, cosine_threshold):
+
+def search_k_percent_to_fix_geometry_old(delta_theta, delta_b, update_cone_mode, cosine_threshold):
     """
     Binary search for the minimum k% to flip that makes the geometric constraint valid.
     Returns:
@@ -137,6 +148,84 @@ def search_k_percent_to_fix_geometry(delta_theta, delta_b, update_cone_mode, cos
             low = mid + 1  # Try larger k
 
     return best_delta, (low if found_valid else None)
+
+
+def search_k_percent_to_fix_geometry(delta_theta, delta_b, update_cone_mode, cosine_threshold):
+    """
+    Binary search for the minimum k% of elements to replace with delta_b (or -delta_b)
+    to satisfy the geometric (cosine) constraint.
+
+    Returns:
+        - fixed_delta_theta: Modified update
+        - final_k_percent: Minimum percent that satisfies the constraint (or None)
+    """
+    delta_original = delta_theta.clone()
+    low, high = 0, 100
+    best_delta = delta_original
+    found_valid = False
+
+    while low <= high:
+        mid = (low + high) // 2
+        k = mid / 100.0
+
+        modified_delta = replace_k_percent_with_target(
+            delta_theta=delta_original,
+            delta_b=delta_b,
+            k_percent=k,
+            update_cone_mode=update_cone_mode
+        )
+
+        valid, _ = check_cos_constraint(
+            delta_theta=modified_delta,
+            delta_b=delta_b,
+            update_cone_mode=update_cone_mode,
+            cosine_threshold=cosine_threshold
+        )
+
+        if valid:
+            found_valid = True
+            best_delta = modified_delta
+            high = mid - 1  # Try smaller k
+        else:
+            low = mid + 1  # Try larger k
+
+    return best_delta, (low if found_valid else None)
+
+
+def replace_k_percent_with_target(delta_theta, delta_b, k_percent, update_cone_mode):
+    """
+    Replace the k% most misaligned elements in delta_theta with corresponding values
+    from delta_b or -delta_b to improve geometric alignment.
+
+    Args:
+        delta_theta (Tensor): The candidate/malicious update.
+        delta_b (Tensor): The benign update direction (reference).
+        k_percent (float): Percentage (0.0 to 1.0) of elements to replace.
+        update_cone_mode (int): 
+            - 1 for aligning with delta_b
+            - -1 for aligning with -delta_b
+
+    Returns:
+        Tensor: Modified delta_theta.
+    """
+    delta = delta_theta.clone()
+    target_direction = delta_b if update_cone_mode == 1 else -delta_b
+
+    # Compute alignment scores between delta_theta and target_direction
+    alignment_scores = delta * target_direction  # Element-wise similarity
+
+    k = int(len(delta) * k_percent)
+    if k == 0:
+        return delta
+
+    # Find indices of the k most misaligned elements (lowest alignment score)
+    _, indices_to_replace = torch.topk(alignment_scores, k, largest=False)
+
+    # Replace delta_theta values at those indices with values from target_direction
+    delta[indices_to_replace] = target_direction[indices_to_replace]
+
+    return delta
+
 
 
 def flip_bottom_k_percent(delta_theta, k_percent):

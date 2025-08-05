@@ -112,8 +112,12 @@ class No_defense_Server(BasicServer):
             logger.info(f"[DEBUG] Mean cos dist between updates: {region_stats['avg_update_cos_d']:.8f}")
             logger.info(f"[DEBUG] Mean cos dist between weights: {region_stats['avg_weight_cos_d']:.8f}")
 
-            region_constraints_dict = build_region_constraints(stats = region_stats,
-                                                               l2_radius_scale=self.params.get("l2_radius_scale"))
+            region_constraints_dict = build_region_constraints(
+                            stats=region_stats,
+                            l2_scale_min=self.params.get("l2_scale_min"),
+                            l2_scale_max=self.params.get("l2_scale_max"),
+                            cos_scale_min=self.params.get("cos_scale_min"),
+                        )
         else:
             logger.warning("Not enough benign-like models to compute region statistics.")
             region_constraints_dict = {i: {} for i in range(8)}  # fallback
