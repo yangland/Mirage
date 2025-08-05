@@ -1,5 +1,5 @@
 # vanilla attack with pixel block trigger no defense yaml
-run_device: cuda:0
+run_device: cuda:3
 resumed_model: saved_models/ResNet18_cifar10_ptm_2000_benign.pt
 data_dir:   ./data
 dataset: cifar10
@@ -104,7 +104,7 @@ malicious_train_algo: Mirage
 defense_method: nodefense
 
 # Region Setting
-benign_sample_for_region: 5
+benign_sample_for_region: 4
 l2_scale_min: 1.5
 l2_scale_max: 5.0
 cos_scale_min: 1.0

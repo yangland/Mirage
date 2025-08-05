@@ -105,7 +105,7 @@ malicious_train_algo: Mirage
 defense_method: nodefense
 
 # Region Setting
-benign_sample_for_region: 5
+benign_sample_for_region: 4
 l2_scale_min: 1.5
 l2_scale_max: 10.0
 cos_scale_min: 1.0

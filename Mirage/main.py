@@ -89,11 +89,9 @@ if __name__ == "__main__":
         
     print(f"[DEBUG] Type of malicious_client: {type(malicious_client)}")
 
-    # all_malicious_clients_ids = [malicious_client for _ in range(params_loaded["no_of_total_adversaries"])]
     possible_region_ids_list = list(range(1, 5))  # 4 regions
     # Region-to-client mapping for ASR evaluation
     # Client 0 is the one we use to test Region 1’s ASR, Client 1 is for Region 2, etc.
-    persistent_region_to_client_mapping = {1: 0, 2: 1, 3: 2, 4: 3}
     region_to_test_client = {}
 
     tracker = BackdoorSurvivalTracker(
