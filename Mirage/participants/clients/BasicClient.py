@@ -200,6 +200,8 @@ class BasicClient():
             self.mask_set = [mask1, mask2, mask3, mask4, mask5]
             # 设置torch输出全部内容
     def init_test_sample_cache(self):
+        if self.test_dataloader is None:
+            return
         samples_per_class_cache = {i: [torch.tensor([]), torch.tensor([])] for i in range(self.params["class_num"])}
         for batch in self.test_dataloader:
             inputs, labels = batch

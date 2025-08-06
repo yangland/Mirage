@@ -8,6 +8,8 @@ from torch.utils.data import DataLoader
 from copy import deepcopy
 from participants.clients.BenignClient import BenignClient
 from utils.utils import model_weight_diff, grad_weighted_sum, has_non_finite_tensor
+from collections import Counter
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +33,8 @@ def fltrust_aggr(server_sd, client_grad_dict, **kwargs):
     """
     device = kwargs["device"]
     root_ds = kwargs["root_ds"]
-    mco_dict = kwargs["mco_dict"]
     iteration = kwargs.get("iteration", 0)
     client_selection = list(client_grad_dict.keys())
-    batch_size = kwargs.get("batch_size", 16)
     c_epochs = kwargs.get("c_epochs", 1)
     global_model = kwargs.get("global_model")
 
@@ -164,3 +164,34 @@ def cosScoreAndClipValue(model_dict1, model_dict2):
     t1 = modelsd2tensor(model_dict1)
     t2 = modelsd2tensor(model_dict2)
     return relu_cos(t1, t2), norm_clip(t1, t2)
+
+
+def create_fl_trust_root_dataset(fl_train, per_class_sample):
+
+
+    # Extract all targets
+    train_targets = [x[1] for x in fl_train]
+
+    # Get all unique class labels
+    all_labels = sorted(set(train_targets))
+    fl_class_num = len(all_labels)
+
+    # Sample fixed number of examples per class
+    indices = []
+    for label in all_labels:
+        label_indices = [idx for idx, target in enumerate(train_targets) if target == label]
+        if len(label_indices) < per_class_sample:
+            raise ValueError(f"Not enough samples for class {label} (needed {per_class_sample}, found {len(label_indices)})")
+        sampled = random.sample(label_indices, per_class_sample)
+        indices += sampled
+
+    # Create subset
+    ds = torch.utils.data.Subset(fl_train, indices)
+
+    # Print label distribution
+    label_counts = Counter([fl_train[i][1] for i in indices])
+    print("Label distribution in FLTrust root dataset:")
+    for label in sorted(label_counts):
+        print(f"  Class {label}: {label_counts[label]} samples")
+
+    return ds

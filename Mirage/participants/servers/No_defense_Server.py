@@ -14,8 +14,8 @@ logger = logging.getLogger("logger")
 
 
 class No_defense_Server(BasicServer):
-    def __init__(self, params, dataloader):
-        super(No_defense_Server, self).__init__(params, dataloader)
+    def __init__(self, params, dataloader, full_train_dataset=None):
+        super(No_defense_Server, self).__init__(params, dataloader, full_train_dataset)
 
         # 查看No_defense_Server的所有参数
 

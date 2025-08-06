@@ -13,6 +13,7 @@ import models.vgg
 from utils.utils import poisoned_batch_injection
 from utils.visualize import visualize, visualize_batch, visualize_tsne
 from aggr import aggregate_global_model
+from aggr.fltrust import create_fl_trust_root_dataset
 
 
 logger = logging.getLogger("logger")
@@ -20,7 +21,7 @@ logger = logging.getLogger("logger")
 
 class \
         BasicServer():
-    def __init__(self, params, dataloader):
+    def __init__(self, params, dataloader, full_train_dataset=None):
         self.params = params
         self.train_dataloader = dataloader.train_dataloader
         self.test_dataloader = dataloader.test_dataloader
@@ -35,7 +36,8 @@ class \
                                                                      self.params["poisoned_iteration_interval"])]
         self.test_model_once(-1, self.test_dataloader, is_poisoned=False)
         self.region_index = 0
-
+        self.full_train_dataset = full_train_dataset
+        
     def pre_process(self, *args, **kwargs):
 
         return True
@@ -493,6 +495,16 @@ class \
 
         # Add device to extra_args
         extra_args["device"] = self.params["run_device"]  
+        
+        if agg_method == "fltrust":
+            if not hasattr(self, "root_ds") or self.root_ds is None:
+                # Create a small IID root dataset for FLTrust — only once
+                self.root_ds = create_fl_trust_root_dataset(
+                    self.full_train_dataset,
+                    per_class_sample=self.params.get("fltrust_per_class_sample", 10)
+                )
+            extra_args["root_ds"] = self.root_ds
+
 
         # === Call aggregation dispatcher
         aggregated_update = aggregate_global_model(

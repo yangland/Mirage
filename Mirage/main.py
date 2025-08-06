@@ -71,7 +71,11 @@ if __name__ == "__main__":
 
     server = None
     if params_loaded["defense_method"].lower() == "nodefense":
-        server = No_defense_Server(params=params_loaded, dataloader=dataloader)
+        server = No_defense_Server(
+                params=params_loaded,
+                dataloader=dataloader,
+                full_train_dataset=dataloader.train_dataset
+            )
         server.total_malicious_clients = list(range(params_loaded["no_of_total_adversaries"]))
     else:
         raise NotImplementedError

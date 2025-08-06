@@ -1,5 +1,5 @@
 # vanilla attack with pixel block trigger no defense yaml
-run_device: cuda:4
+run_device: cuda:2
 resumed_model: saved_models/ResNet18_cifar10_ptm_2000_benign.pt
 data_dir:   ./data
 dataset: cifar10

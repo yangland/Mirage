@@ -300,6 +300,7 @@ def model_weight_diff(after, before):
     """
     return {k: after[k] - before[k] for k in after}
 
+
 def grad_weighted_sum(grad_dict, weights_dict):
     """
     Weighted sum of gradients.
@@ -309,13 +310,17 @@ def grad_weighted_sum(grad_dict, weights_dict):
     """
     agg_grad = {}
     for client_id, grad in grad_dict.items():
-        weight = weights_dict.get(client_id, 0.0)
+        weight = float(weights_dict.get(client_id, 0.0))  # Ensure scalar float
         for k, v in grad.items():
+            weighted = v.clone().detach() * weight
             if k not in agg_grad:
-                agg_grad[k] = v.clone().detach() * weight
+                agg_grad[k] = weighted
             else:
-                agg_grad[k] += v.clone().detach() * weight
+                if weighted.shape != agg_grad[k].shape:
+                    weighted = weighted.reshape_as(agg_grad[k])  # ✅ match shape
+                agg_grad[k] += weighted
     return agg_grad
+
 
 
 def has_non_finite_tensor(state_dict, name="tensor"):
