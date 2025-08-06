@@ -3,5 +3,8 @@
         "activityBar.background": "#072A64",
         "titleBar.activeBackground": "#0A3B8C",
         "titleBar.activeForeground": "#FBFCFF"
-    }
+    },
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "python-envs.pythonProjects": []
 }

@@ -86,21 +86,6 @@ class No_defense_Server(BasicServer):
         global_model = copy.deepcopy(self.global_model)
         aggregated_model_id = [1] * self.params["no_of_participants_per_iteration"]
 
-        # # === Step 1: Sample t malicious clients for benign training (for region stat) ===
-        # benign_sample_num = self.params.get("benign_sample_for_region")
-        # benign_like_malicious_ids = random.sample(malicious_clients_list, min(benign_sample_num, len(malicious_clients_list)))
-        # benign_models_from_malicious = []
-
-        # for client_id in benign_like_malicious_ids:
-        #     benign_like_model = copy.deepcopy(self.global_model)
-        #     for name, param in benign_like_model.named_parameters():
-        #         param.requires_grad = True
-        #     benign_like_model.train()
-
-        #     # Benign-style training using benign client logic
-        #     trained_model = benign_client.local_train(iteration, benign_like_model, self.train_dataloader[client_id], client_id)
-        #     benign_models_from_malicious.append(trained_model)
-
         # === Step 1: Sample t malicious clients for benign training (for region stat) ===
         benign_sample_num = self.params.get("benign_sample_for_region")
         benign_like_malicious_ids = random.sample(

@@ -294,3 +294,33 @@ def assign_regions_to_malicious(
 
     return region_assignments
 
+def model_weight_diff(after, before):
+    """
+    Compute the element-wise difference between two model state_dicts.
+    """
+    return {k: after[k] - before[k] for k in after}
+
+def grad_weighted_sum(grad_dict, weights_dict):
+    """
+    Weighted sum of gradients.
+    :param grad_dict: dict of client_id -> state_dict
+    :param weights_dict: dict of client_id -> scalar weight
+    :return: aggregated gradient (state_dict)
+    """
+    agg_grad = {}
+    for client_id, grad in grad_dict.items():
+        weight = weights_dict.get(client_id, 0.0)
+        for k, v in grad.items():
+            if k not in agg_grad:
+                agg_grad[k] = v.clone().detach() * weight
+            else:
+                agg_grad[k] += v.clone().detach() * weight
+    return agg_grad
+
+
+def has_non_finite_tensor(state_dict, name="tensor"):
+    for k, v in state_dict.items():
+        if not torch.isfinite(v).all():
+            print(f"[WARNING] Non-finite value detected in {name} at {k}")
+            return True
+    return False

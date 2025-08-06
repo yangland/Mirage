@@ -4,6 +4,7 @@ from aggr.flame import flame_aggr
 from aggr.krum import krum_aggr
 from aggr.geometric_median import geo_med_aggr
 from aggr.normbound import normbound_aggr
+from aggr.fltrust import fltrust_aggr
 
 SUPPORTED_AGG_METHODS = {
     "fedavg": fedavg,
@@ -13,6 +14,7 @@ SUPPORTED_AGG_METHODS = {
     "krum": krum_aggr,
     "geo": geo_med_aggr,
     "normbound": normbound_aggr,
+    "fltrust": fltrust_aggr,
 }
 
 def aggregate_global_model(
@@ -29,12 +31,9 @@ def aggregate_global_model(
     if agg_method not in SUPPORTED_AGG_METHODS:
         raise ValueError(f"Unsupported aggregation method: {agg_method}")
 
-    # ✅ Extract required kwarg(s)
-    device = kwargs.get("device")
-
     return SUPPORTED_AGG_METHODS[agg_method](
         server_model.state_dict(),
         client_grad_dict,
-        # device=device,  # ✅ Pass it explicitly
+        global_model=server_model,
         **kwargs,       # In case the method needs other extras (e.g., f, m)
     )
