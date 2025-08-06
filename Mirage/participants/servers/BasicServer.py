@@ -491,6 +491,9 @@ class \
 
             print(f"[INFO] Using {agg_method} with f={f}" + (f", m={m}" if agg_method == "multi-krum" else ""))
 
+        # Add device to extra_args
+        extra_args["device"] = self.params["run_device"]  
+
         # === Call aggregation dispatcher
         aggregated_update = aggregate_global_model(
             agg_method=agg_method,
@@ -498,9 +501,8 @@ class \
             client_grad_dict=client_grad_dict,
             params=self.params,
             iteration=getattr(self, "current_iteration", 0),
-            **extra_args,  # Pass extra krum-specific args
+            **extra_args  # ✅ Includes device and any Krum-specific args
         )
-
 
         # === Apply aggregated update to global model
         for name, param in self.global_model.state_dict().items():
