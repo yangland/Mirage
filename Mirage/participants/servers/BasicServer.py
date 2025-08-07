@@ -87,55 +87,56 @@ class \
             self.params["start_iteration"] = 1
             logger.info(f"start training from the 1st round")
    
-            
-    def select_clients(self, iteration):
-        """
-        Selects malicious and benign clients for the current round.
-
-        - Always selects `no_of_adversaries_per_iter` malicious clients from IDs 0 to 3
-        - Selects remaining clients (benign) from rest of the population
-        - Supports different selection strategies for malicious clients
-        """
-
+                
+    def select_clients(self, iteration, region_to_malicious_client):
         total_clients = self.params["no_of_total_participants"]
-        total_adversaries = self.params["no_of_total_adversaries"]  # e.g., 4
-        adversaries_per_iter = self.params["no_of_adversaries_per_iter"]  # e.g., 2
-        clients_per_iter = self.params["no_of_participants_per_iteration"]  # e.g., 10
+        total_adversaries = self.params["no_of_total_adversaries"]
+        adversaries_per_iter = self.params["no_of_adversaries_per_iter"]
+        clients_per_iter = self.params["no_of_participants_per_iteration"]
         strategy = self.params.get("clients_region_map", "by_order")
-            
-        # Fixed region-to-malicious-client mapping
-        persistent_region_to_client_mapping = {1: 0, 2: 1, 3: 2, 4: 3}
-        region_ids = list(persistent_region_to_client_mapping.keys())
 
-        # === Step 1: Select regions to attack
+        adversary_id_pool = list(range(total_adversaries))
+        benign_pool = list(range(total_adversaries, total_clients))
+
+        selected_malicious_clients = []
+
         if strategy == "pre_defined":
-            predefined_id_set = self.params.get("predefined_id_set", [[1, 4], [2, 3]])
-            regions_to_attack = predefined_id_set[iteration % len(predefined_id_set)]
+            predefined_id_set = self.params.get("predefined_id_set", [[1], [4], [2], [3]])
+            round_idx = iteration % len(predefined_id_set)
+            regions_to_attack = predefined_id_set[round_idx]
+
+            if adversaries_per_iter % len(regions_to_attack) != 0:
+                raise ValueError(
+                    f"Cannot evenly assign {adversaries_per_iter} adversaries to {len(regions_to_attack)} regions."
+                )
+
+            num_attackers_per_region = adversaries_per_iter // len(regions_to_attack)
+
+            for region in regions_to_attack:
+                # Use the passed-in region-to-client map
+                canonical_client = region_to_malicious_client[region]
+                selected_malicious_clients.extend([canonical_client] * num_attackers_per_region)
 
         elif strategy == "random":
+            region_ids = list(range(1, total_adversaries + 1))
             regions_to_attack = random.sample(region_ids, adversaries_per_iter)
+            selected_malicious_clients = random.sample(adversary_id_pool, adversaries_per_iter)
 
         elif strategy == "by_order":
+            region_ids = list(range(1, total_adversaries + 1))
             start = (iteration * adversaries_per_iter) % len(region_ids)
             regions_to_attack = region_ids[start:start + adversaries_per_iter]
-            # Wrap if needed
             if len(regions_to_attack) < adversaries_per_iter:
                 regions_to_attack += region_ids[:adversaries_per_iter - len(regions_to_attack)]
+            selected_malicious_clients = random.sample(adversary_id_pool, adversaries_per_iter)
 
         else:
             raise ValueError(f"Unknown clients_region_map strategy: {strategy}")
 
-        # === Step 2: Map attacked regions to malicious client IDs
-        selected_malicious_clients = [persistent_region_to_client_mapping[r] for r in regions_to_attack]
-
-        # === Step 3: Select benign clients (from IDs >= 4)
-        benign_pool = list(range(total_adversaries, total_clients))  # IDs 4 to 99
-        selected_benign_clients = random.sample(benign_pool, clients_per_iter - len(selected_malicious_clients))
-
-        # === Step 4: Combine all selected clients
+        num_benign = clients_per_iter - len(selected_malicious_clients)
+        selected_benign_clients = random.sample(benign_pool, num_benign)
         selected_clients = selected_malicious_clients + selected_benign_clients
 
-        # === Log info
         logger.info(f"[Round {iteration}] Strategy: {strategy}")
         logger.info(f"[Round {iteration}] Regions to attack: {regions_to_attack}")
         logger.info(f"[Round {iteration}] Selected malicious clients: {selected_malicious_clients}")
@@ -143,6 +144,8 @@ class \
         logger.info(f"[Round {iteration}] All selected clients: {selected_clients}")
 
         return selected_clients, selected_malicious_clients
+
+
 
 
 
@@ -275,9 +278,15 @@ class \
         logger.info(f"| Test Global model in iteration {iteration}")
         logger.info(f"| Loss {acc_loss:.4f}, Acc {acc * 100:.2f}%")
 
+        logger.debug(f"[DEBUG] client_region_mapping = {client_region_mapping}")
+        logger.debug(f"[DEBUG] trigger_set_by_region = {malicious_clients.trigger_set_by_region}")
+        logger.debug(f"[DEBUG] mask_set_by_region = {malicious_clients.mask_set_by_region}")
+
         # === ASR evaluation per region ===
         if iteration >= self.params["poisoned_start_iteration"]:
             for region_id in possible_region_ids:
+                logger.debug(f"[DEBUG] === Evaluating Region {region_id} ===")
+                
                 if region_id not in malicious_clients.trigger_set_by_region or \
                 region_id not in malicious_clients.mask_set_by_region:
                     logger.warning(f"[ASR] Skipping Region {region_id} — no trigger/mask available.")
@@ -286,13 +295,16 @@ class \
                 trigger = malicious_clients.trigger_set_by_region[region_id]
                 mask = malicious_clients.mask_set_by_region[region_id]
 
-                # Pick any available client from this region to perform ASR test
                 test_client_ids = [cid for cid, rid in client_region_mapping.items() if rid == region_id]
+                logger.debug(f"[DEBUG] Region {region_id} → test_client_ids = {test_client_ids}")
+
                 if not test_client_ids:
                     logger.warning(f"[ASR] Skipping Region {region_id} — no clients mapped for testing.")
                     continue
 
                 test_client_id = test_client_ids[0]  # Pick any one client
+
+                logger.debug(f"[DEBUG] Using test_client_id = {test_client_id} for Region {region_id}")
 
                 asr, loss = self.test_model_once(
                     iteration=iteration,
@@ -326,6 +338,7 @@ class \
             self._visualize_tsne(iteration, malicious_clients)
 
         return results
+
 
 
     def test_model_once(self, iteration, test_dataloader, is_poisoned=False, model=None, trigger=None, mask=None,

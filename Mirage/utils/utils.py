@@ -173,6 +173,12 @@ def update_weight_accumulator_old(model, global_model, weight_accumulator, weigh
     return weight_accumulator, single_weight_accumulator
 
 
+def update_weight_accumulator_direct(single_wa, accumulator):
+    for key in accumulator:
+        accumulator[key] += single_wa[key]
+    return accumulator
+
+
 def update_weight_accumulator(model, global_model, weight_accumulator, weight=1.0):
     '''
     Compute model updates and accumulate them into weight_accumulator.
@@ -271,21 +277,27 @@ def assign_regions_to_malicious(
         if predefined_id_set is None:
             raise ValueError("predefined_id_set must be provided for 'pre_defined' strategy.")
 
-        # Calculate relative round index
         round_idx = (iteration - server.params["start_iteration"]) % len(predefined_id_set)
 
         if round_idx >= len(predefined_id_set):
             raise ValueError(f"predefined_id_set only has {len(predefined_id_set)} entries, but got round {round_idx}")
 
         regions_to_assign = predefined_id_set[round_idx]
+        num_regions_to_assign = len(regions_to_assign)
+        num_malicious = len(malicious_clients_this_round)
 
-        if len(regions_to_assign) != len(malicious_clients_this_round):
+        # Check if regions can be evenly assigned
+        if num_malicious % num_regions_to_assign != 0:
             raise ValueError(
-                f"Mismatch: {len(malicious_clients_this_round)} malicious clients, "
-                f"but {len(regions_to_assign)} regions in predefined_id_set[{round_idx}]"
+                f"Cannot evenly assign {num_malicious} malicious clients to "
+                f"{num_regions_to_assign} regions in predefined_id_set[{round_idx}]"
             )
 
-        for client_id, region_id in zip(malicious_clients_this_round, regions_to_assign):
+        # Repeat region IDs to match number of malicious clients
+        repeat_factor = num_malicious // num_regions_to_assign
+        expanded_region_ids = regions_to_assign * repeat_factor
+
+        for client_id, region_id in zip(malicious_clients_this_round, expanded_region_ids):
             region_assignments[client_id] = region_id
             logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id} (pre_defined)")
 

@@ -23,6 +23,13 @@ from utils.backdoor_survival_tracker import BackdoorSurvivalTracker, log_backdoo
 
 logger = logging.getLogger("logger")
 
+# Fixed region-to-client mapping — e.g., region 1 is always client 0
+canonical_client_for_region = {
+    1: 0,
+    2: 1,
+    3: 2,
+    4: 3,
+}
 
 def set_random_seed(seed):
     random.seed(seed)
@@ -111,7 +118,10 @@ if __name__ == "__main__":
         server.pre_process(test_data=server.test_dataloader, iteration=iteration)
         
         # === Step 2: Select clients
-        selected_clients, selected_malicious_clients = server.select_clients(iteration)
+        selected_clients, selected_malicious_clients = server.select_clients(
+                                                                iteration=iteration,
+                                                                region_to_malicious_client=canonical_client_for_region
+                                                            )
 
         # === Step 3: Assign region IDs to malicious clients
         client_region_mapping = assign_regions_to_malicious(
@@ -125,7 +135,12 @@ if __name__ == "__main__":
         )
         logger.info(f"[Round {iteration}] Region assignments: {client_region_mapping}")
         
-        region_to_test_client.update(client_region_mapping)
+        # Reverse mapping: region_id → first client assigned to that region
+        region_to_test_client = {}
+        for region_id in possible_region_ids_list:
+            if region_id in malicious_client.trigger_set_by_region:
+                region_to_test_client[region_id] = canonical_client_for_region[region_id]
+
         
         # === Step 4: Preprocess + client uploads
         server.pre_process(test_data=server.test_dataloader, iteration=iteration)
@@ -141,7 +156,8 @@ if __name__ == "__main__":
             malicious_client=malicious_client,
             selected_clients_list=selected_clients,
             malicious_clients_list=selected_malicious_clients,
-            client_region_mapping=client_region_mapping 
+            client_region_mapping=client_region_mapping,
+            canonical_client_for_region=canonical_client_for_region,
         )
 
         # === Step 5: Aggregate model
@@ -153,12 +169,23 @@ if __name__ == "__main__":
         
         logger.info(f"aggregated_model: {aggregated_model_id}")
 
+        # Reverse the mapping before passing
+        region_to_test_client = {}
+        for client_id, region_id in client_region_mapping.items():
+            if region_id in malicious_client.trigger_set_by_region:
+                region_to_test_client[region_id] = client_id
+
+        reverse_client_region_mapping = {
+            client_id: region_id for region_id, client_id in region_to_test_client.items()
+        }
+
+
         # === Step 6: Evaluate global model
         global_eval_results = server.test_global_model(
                                                         iteration=iteration,
                                                         malicious_clients=malicious_client,
                                                         possible_region_ids=possible_region_ids_list,
-                                                        client_region_mapping=region_to_test_client,
+                                                        client_region_mapping=reverse_client_region_mapping,
                                                         show_tsne= params_loaded.get("show_tsne", False)
                                                     )
         # log the results in CSV file
