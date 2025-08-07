@@ -103,7 +103,11 @@ if __name__ == "__main__":
     possible_region_ids_list = list(range(1, 5))  # 4 regions
     # Region-to-client mapping for ASR evaluation
     # Client 0 is the one we use to test Region 1’s ASR, Client 1 is for Region 2, etc.
-    region_to_test_client = {}
+    region_to_test_client = {
+        region_id: canonical_client_for_region[region_id]
+        for region_id in possible_region_ids_list
+        if region_id in malicious_client.trigger_set_by_region
+    }
 
     tracker = BackdoorSurvivalTracker(
         save_dir=params_loaded["folder_path"],
@@ -135,16 +139,7 @@ if __name__ == "__main__":
         )
         logger.info(f"[Round {iteration}] Region assignments: {client_region_mapping}")
         
-        # Reverse mapping: region_id → first client assigned to that region
-        region_to_test_client = {}
-        for region_id in possible_region_ids_list:
-            if region_id in malicious_client.trigger_set_by_region:
-                region_to_test_client[region_id] = canonical_client_for_region[region_id]
-
-        
-        # === Step 4: Preprocess + client uploads
-        server.pre_process(test_data=server.test_dataloader, iteration=iteration)
-
+        # === Step 4: Broadcast model to clients
         # include poisoned clients
         (
             weight_accumulator,
@@ -169,16 +164,16 @@ if __name__ == "__main__":
         
         logger.info(f"aggregated_model: {aggregated_model_id}")
 
-        # Reverse the mapping before passing
-        region_to_test_client = {}
+        # === Update region→client mapping for ASR testing
         for client_id, region_id in client_region_mapping.items():
             if region_id in malicious_client.trigger_set_by_region:
                 region_to_test_client[region_id] = client_id
 
+        # === Rebuild reverse mapping to be passed to test_global_model
         reverse_client_region_mapping = {
-            client_id: region_id for region_id, client_id in region_to_test_client.items()
+            client_id: region_id
+            for region_id, client_id in region_to_test_client.items()
         }
-
 
         # === Step 6: Evaluate global model
         global_eval_results = server.test_global_model(
