@@ -21,6 +21,7 @@ class MirageClient(BasicClient):
     def __init__(self, params, train_dataloader, test_dataloader):
         super(MirageClient, self).__init__(params, train_dataloader, test_dataloader)
         self.init_trigger_mask()
+        # {region_id → trigger} Stores trigger/mask for each attacked region, initialized during broadcast_upload
         self.trigger_set_by_region = {}
         self.mask_set_by_region = {}
 

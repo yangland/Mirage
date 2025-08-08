@@ -4,20 +4,66 @@ from scipy.spatial.distance import cdist
 import torch
 
 
+# def geo_med_aggr(server_model_state_dict, client_updates_dict, device, **kwargs):
+#     model_weight = dict()
+#     client_ids = list(client_updates_dict.keys())
+
+#     with torch.no_grad():
+#         for layer_name, param in client_updates_dict[client_ids[0]].items():
+#             layer_weights = {}
+#             for client_id in client_ids:
+#                 layer_weights[client_id] = client_updates_dict[client_id][layer_name]
+#             # print("layer_weights", layer_weights)
+#             geo_med, client_weights = geometric_median(layer_weights)
+#             model_weight[layer_name] = geo_med.to(device)
+            
+#     return model_weight
+
 def geo_med_aggr(server_model_state_dict, client_updates_dict, device, **kwargs):
+    """
+    Aggregates model updates using geometric median.
+
+    Returns:
+        - model_weight: aggregated model (dict of tensors)
+        - client_weights: dict of client_id → normalized weight (percentage summing to 100.0)
+    """
     model_weight = dict()
     client_ids = list(client_updates_dict.keys())
+    client_weight_accumulator = {cid: 0.0 for cid in client_ids}
+    num_layers = 0
 
     with torch.no_grad():
-        for layer_name, param in client_updates_dict[client_ids[0]].items():
-            layer_weights = {}
-            for client_id in client_ids:
-                layer_weights[client_id] = client_updates_dict[client_id][layer_name]
-            # print("layer_weights", layer_weights)
-            geo_med, client_weights = geometric_median(layer_weights)
+        for layer_name in server_model_state_dict.keys():
+            layer_weights = {
+                client_id: client_updates_dict[client_id][layer_name]
+                for client_id in client_ids
+            }
+
+            geo_med, layer_client_weights = geometric_median(layer_weights)
             model_weight[layer_name] = geo_med.to(device)
-            
-    return model_weight
+
+            for cid in client_ids:
+                client_weight_accumulator[cid] += layer_client_weights.get(cid, 0.0)
+
+            num_layers += 1
+
+    # === Step 1: Average the weights over layers
+    averaged_weights = {
+        cid: client_weight_accumulator[cid] / num_layers
+        for cid in client_ids
+    }
+
+    # === Step 2: Normalize to sum to 100.0
+    total_weight = sum(averaged_weights.values())
+    if total_weight == 0:
+        client_weights = {cid: 0.0 for cid in client_ids}
+    else:
+        client_weights = {
+            cid: (averaged_weights[cid] / total_weight) * 100.0
+            for cid in client_ids
+        }
+
+    return model_weight, client_weights
 
 
 # https://github.com/mrwojo/geometric_median?utm_source=pocket_reader

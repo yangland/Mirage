@@ -31,7 +31,12 @@ def flame_aggr(server_model_state_dict, client_updates_dict, noise=0.001, exp_di
     # Return the gradient update (difference between new and old server state)
     server_grad = get_model_update(new_server_sd, server_model_state_dict)
     
-    return server_grad
+    client_weights = {
+        cid: (100.0/len(flame_clients) if cid in flame_clients else 0.0)
+        for cid in client_updates_dict
+    }
+
+    return server_grad, client_weights
 
 
 def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0):

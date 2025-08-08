@@ -63,7 +63,7 @@ test_batch_size: 1000
 no_of_total_participants: 100
 no_of_participants_per_iteration: 10
 no_of_total_adversaries: 4
-no_of_adversaries_per_iter: 2
+no_of_adversaries_per_iter: 3
 clients_region_map: "pre_defined"  # or "random", "by_order"
 predefined_id_set: [[1], [4], [2], [3]]  # Only used if clients_region_map == "pre_defined"
 

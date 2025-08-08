@@ -341,3 +341,93 @@ def has_non_finite_tensor(state_dict, name="tensor"):
             print(f"[WARNING] Non-finite value detected in {name} at {k}")
             return True
     return False
+
+
+
+def virtual_mali_id_assignment(selected_malicious_clients, regions_to_attack, virtual_id_base=20000):
+    """
+    Assigns unique virtual client IDs to malicious clients.
+    Format: 2xyy where:
+      - x = real malicious client ID
+      - yy = counter for how many times this real client has been used
+    """
+    virtual_malicious_clients = []
+    malicious_client_mapping = dict()     # virtual_id → real_id
+    client_region_mapping = dict()        # virtual_id → region_id
+
+    usage_counter = dict()  # real_id → count
+
+    for region_id in regions_to_attack:
+        for real_client_id in selected_malicious_clients:
+            # Track usage per real client
+            if real_client_id not in usage_counter:
+                usage_counter[real_client_id] = 0
+
+            count = usage_counter[real_client_id]
+            virtual_id = virtual_id_base + real_client_id * 100 + count   # e.g., 20200, 20201, 20300, etc.
+
+            virtual_malicious_clients.append(virtual_id)
+            malicious_client_mapping[virtual_id] = real_client_id
+            client_region_mapping[virtual_id] = region_id
+
+            usage_counter[real_client_id] += 1
+
+    return virtual_malicious_clients, malicious_client_mapping, client_region_mapping
+
+
+
+
+def get_regions_to_attack(selected_malicious_clients, canonical_client_for_region):
+    """
+    Given selected malicious clients and the known mapping from region → malicious client,
+    determine which regions are being attacked in this round.
+    """
+    regions_to_attack = set()
+    reverse_mapping = {v: k for k, v in canonical_client_for_region.items()}  # client → region
+
+    for client_id in selected_malicious_clients:
+        if client_id in reverse_mapping:
+            regions_to_attack.add(reverse_mapping[client_id])
+        else:
+            raise ValueError(f"Malicious client ID {client_id} not found in canonical mapping.")
+
+    return sorted(list(regions_to_attack))
+
+
+def analyze_malicious_contribution(
+    client_weights: dict,
+    selected_clients: list,
+    selected_malicious_clients: list,
+    logger=None
+):
+    """
+    Analyzes how much total weight was assigned to malicious clients
+    compared to their proportion in the selected clients.
+
+    Args:
+        client_weights (dict): client_id -> weight (percentage)
+        selected_clients (list): all selected client IDs this round
+        selected_malicious_clients (list): subset of selected_clients that are malicious
+        logger (optional): logger instance for logging (can be None)
+
+    Returns:
+        dict with:
+            - malicious_weight_percent: total assigned weight to malicious clients (0–100%)
+            - malicious_client_ratio: fraction of selected clients that are malicious (0–1)
+    """
+    malicious_weight_percent = sum(
+        client_weights.get(cid, 0.0) for cid in selected_malicious_clients
+    )
+
+    malicious_client_ratio = len(selected_malicious_clients) / max(len(selected_clients), 1)
+
+    if logger:
+        logger.info("[Malicious Contribution Analysis]")
+        logger.info(f"  - Malicious clients count: {len(selected_malicious_clients)} / {len(selected_clients)}")
+        logger.info(f"  - Malicious client ratio: {malicious_client_ratio:.2f}")
+        logger.info(f"  - Total malicious weight: {malicious_weight_percent:.2f}%")
+
+    return {
+        "malicious_weight_percent": malicious_weight_percent,
+        "malicious_client_ratio": malicious_client_ratio
+    }

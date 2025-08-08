@@ -18,7 +18,12 @@ def krum_aggr(server_model_state_dict, client_updates_dict, f, m, **kwargs):
     krum_model_dict = dict((client_id, client_updates_dict[client_id]) for client_id in krum_clients)
     new_weights = average_tensor_dict(krum_model_dict)
     
-    return new_weights
+    client_weights = {
+        cid: (100.0/len(krum_clients) if cid in krum_clients else 0.0)
+        for cid in client_updates_dict
+    }
+
+    return new_weights, client_weights
 
 
 def average_tensor_dict(tensor_dicts):

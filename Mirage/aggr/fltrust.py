@@ -13,6 +13,80 @@ import random
 
 logger = logging.getLogger(__name__)
 
+# def fltrust_aggr(server_sd, client_grad_dict, **kwargs):
+#     """
+#     FLTrust aggregation method.
+
+#     Args:
+#         server_sd: state_dict of the global server model
+#         client_grad_dict: dict of client_id -> client_update (state_dict)
+#         kwargs: must include:
+#             - device
+#             - root_ds
+#             - mco_dict
+#             - iteration
+#             - batch_size (optional)
+#             - c_epochs (optional)
+
+#     Returns:
+#         Aggregated update (state_dict)
+#     """
+#     device = kwargs["device"]
+#     root_ds = kwargs["root_ds"]
+#     iteration = kwargs.get("iteration", 0)
+#     client_selection = list(client_grad_dict.keys())
+#     c_epochs = kwargs.get("c_epochs", 1)
+#     global_model = kwargs.get("global_model")
+
+#     # === Step 1: Train server direction on root data
+#     server_c_grad = fltrust_server_iteration(
+#         iteration=iteration,
+#         c_epochs=c_epochs,
+#         root_ds=root_ds,
+#         global_model=global_model, 
+#         params=kwargs.get("params"),
+#         device=device
+#     )
+
+#     if has_non_finite_tensor(server_c_grad, name="server_c_grad"):
+#         logger.warning(f"[DEBUG] Iter {iteration} - Non-finite values in server_c_grad")
+
+#     # === Step 2: Compute trust scores and clip values
+#     FLTrustTotalScore = 1e-9
+#     trust_score_list = []
+#     clip_value_list = []
+
+#     for client_id in client_selection:
+#         client_grad = client_grad_dict[client_id]
+
+#         if has_non_finite_tensor(client_grad, name=f"client {client_id}"):
+#             logger.warning(f"[DEBUG] Iter {iteration} - Skipping client {client_id} due to non-finite gradients")
+#             continue
+
+#         client_trust_score, client_clipped_value = cosScoreAndClipValue(server_c_grad, client_grad)
+
+#         if not math.isfinite(client_trust_score):
+#             logger.warning(f"[WARNING] Iter {iteration} - Non-finite trust score for client {client_id}")
+#         if not torch.isfinite(client_clipped_value).all():
+#             logger.warning(f"[WARNING] Iter {iteration} - Non-finite clipped value for client {client_id}")
+
+#         trust_score_list.append(client_trust_score)
+#         clip_value_list.append(client_clipped_value)
+#         FLTrustTotalScore += client_trust_score
+
+#     # === Step 3: Normalize trust scores
+#     trust_score_list = [x / FLTrustTotalScore for x in trust_score_list]
+#     fltrust_weights_list = [a * b for a, b in zip(trust_score_list, clip_value_list)]
+#     fltrust_weights = dict(zip(client_selection, fltrust_weights_list))
+
+#     float_weights = {k: v.item() for k, v in fltrust_weights.items()}
+#     logger.info(f"[FLTrust] Weights: {float_weights}")
+
+#     # === Step 4: Aggregate using weighted sum
+#     aggregated_grad = grad_weighted_sum(client_grad_dict, fltrust_weights)
+
+#     return aggregated_grad
+
 def fltrust_aggr(server_sd, client_grad_dict, **kwargs):
     """
     FLTrust aggregation method.
@@ -29,7 +103,8 @@ def fltrust_aggr(server_sd, client_grad_dict, **kwargs):
             - c_epochs (optional)
 
     Returns:
-        Aggregated update (state_dict)
+        aggregated_grad: Aggregated update (state_dict)
+        client_weights: dict of client_id -> normalized weight (% summing to 100)
     """
     device = kwargs["device"]
     root_ds = kwargs["root_ds"]
@@ -43,7 +118,7 @@ def fltrust_aggr(server_sd, client_grad_dict, **kwargs):
         iteration=iteration,
         c_epochs=c_epochs,
         root_ds=root_ds,
-        global_model=global_model, 
+        global_model=global_model,
         params=kwargs.get("params"),
         device=device
     )
@@ -55,6 +130,7 @@ def fltrust_aggr(server_sd, client_grad_dict, **kwargs):
     FLTrustTotalScore = 1e-9
     trust_score_list = []
     clip_value_list = []
+    valid_client_ids = []
 
     for client_id in client_selection:
         client_grad = client_grad_dict[client_id]
@@ -72,21 +148,50 @@ def fltrust_aggr(server_sd, client_grad_dict, **kwargs):
 
         trust_score_list.append(client_trust_score)
         clip_value_list.append(client_clipped_value)
+        valid_client_ids.append(client_id)
         FLTrustTotalScore += client_trust_score
+
+    # In case all clients were skipped
+    if not valid_client_ids:
+        logger.warning("[FLTrust] No valid clients for trust-based weighting. Falling back to equal weights.")
+
+        num_clients = len(client_selection)
+        equal_weight = 1.0 / num_clients
+        fltrust_weights = {cid: torch.tensor(equal_weight, device=device) for cid in client_selection}
+
+        # Normalize to 100%
+        client_weights = {cid: 100.0 * equal_weight for cid in client_selection}
+
+        # Aggregate using equal weights
+        aggregated_grad = grad_weighted_sum(client_grad_dict, fltrust_weights)
+
+        logger.info(f"[FLTrust] Fallback equal weights (sum=100.0):")
+        for cid, weight in sorted(client_weights.items()):
+            logger.info(f"  {cid}: {weight:.2f}%")
+
+        return aggregated_grad, client_weights
 
     # === Step 3: Normalize trust scores
     trust_score_list = [x / FLTrustTotalScore for x in trust_score_list]
     fltrust_weights_list = [a * b for a, b in zip(trust_score_list, clip_value_list)]
-    fltrust_weights = dict(zip(client_selection, fltrust_weights_list))
+    fltrust_weights = dict(zip(valid_client_ids, fltrust_weights_list))
 
-    float_weights = {k: v.item() for k, v in fltrust_weights.items()}
-    logger.info(f"[FLTrust] Weights: {float_weights}")
+    # === Step 4: Normalize weights to sum to 100.0
+    total_weight = sum([v.item() for v in fltrust_weights.values()]) + 1e-10
+    client_weights = {
+        cid: (fltrust_weights[cid].item() / total_weight) * 100.0
+        for cid in fltrust_weights
+    }
 
-    # === Step 4: Aggregate using weighted sum
+    # === Step 5: Aggregate using weighted sum
     aggregated_grad = grad_weighted_sum(client_grad_dict, fltrust_weights)
 
-    return aggregated_grad
+    # === Logging
+    logger.info(f"[FLTrust] Normalized client weights (sum=100.0):")
+    for cid, weight in sorted(client_weights.items()):
+        logger.info(f"  {cid}: {weight:.2f}%")
 
+    return aggregated_grad, client_weights
 
 
 def fltrust_server_iteration(iteration, c_epochs, root_ds, global_model, params, device):

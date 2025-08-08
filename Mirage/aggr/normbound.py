@@ -25,7 +25,11 @@ def normbound_aggr(server_model_state_dict, clients_grad_dict, **kwargs):
     clipped_update = torch.mean(torch.stack(clipped_updates), dim=0)
     reference_sd = next(iter(clients_grad_dict.values()))
     clipped_grad = restore_dict_grad_flat(clipped_update, reference_sd)
-    return clipped_grad
+    
+    # model weights for clients
+    n_clients = len(clients_grad_dict)
+    client_weights = {cid: 100.00 / n_clients for cid in clients_grad_dict}
+    return clipped_grad, client_weights
 
 
 def flat_dict(grad_dict, layer_list=None):

@@ -101,7 +101,9 @@ class \
         selected_malicious_clients = []
 
         if strategy == "pre_defined":
-            predefined_id_set = self.params.get("predefined_id_set", [[1], [4], [2], [3]])
+            predefined_id_set = self.params.get("predefined_id_set", None)
+            if predefined_id_set is None:
+                raise ValueError("predefined_id_set is not defined")
             round_idx = iteration % len(predefined_id_set)
             regions_to_attack = predefined_id_set[round_idx]
 
@@ -144,9 +146,6 @@ class \
         logger.info(f"[Round {iteration}] All selected clients: {selected_clients}")
 
         return selected_clients, selected_malicious_clients
-
-
-
 
 
     # def test_global_model(self, iteration, malicious_clients):
@@ -257,7 +256,12 @@ class \
     #     return acc, loss
 
 
-    def test_global_model(self, iteration, malicious_clients, possible_region_ids=None, client_region_mapping=None, show_tsne=False):
+    def test_global_model(self, 
+                          iteration,
+                          malicious_clients, 
+                          possible_region_ids=None, 
+                          client_region_mapping=None, 
+                          show_tsne=False):
         """
         Evaluate the global model: clean accuracy and ASR per region.
         Returns a dictionary with clean accuracy/loss and ASR info.
@@ -450,22 +454,6 @@ class \
             global_model_copy[name] = self.global_model.state_dict()[name].clone().detach().requires_grad_(False)
         return global_model_copy
 
-    # def aggregation(self, weight_accumulator, aggregated_model_id):
-    #     '''
-    #     model aggregation
-
-    #     :param weight_accumulator:
-    #     :param aggregated_model_id:
-    #     :param update_norm_list:
-    #     :return:
-    #     '''
-
-    #     no_of_participants_this_round = sum(aggregated_model_id)
-    #     if no_of_participants_this_round != 0:
-    #         for name, data in self.global_model.state_dict().items():
-    #             update_per_layer = weight_accumulator[name] * (1 / no_of_participants_this_round)
-    #             data = data.float()
-    #             data.add_(update_per_layer)
 
     def aggregation(self, agg_method, weight_accumulator_by_client):
         """
@@ -500,11 +488,11 @@ class \
 
         if agg_method in ["krum"]:
             f = num_clients // 2 - 1  # Byzantine tolerance
-            m = num_clients - f - 2   # For multi-krum, number of selected updates
+            m = num_clients // 2 - 1
             extra_args["f"] = f
             extra_args["m"] = m
 
-            print(f"[INFO] Using {agg_method} with f={f}" + (f", m={m}" if agg_method == "multi-krum" else ""))
+            print(f"[INFO] Using {agg_method} with f={f}" + (f", m={m}" if agg_method == "krum" else ""))
 
         # Add device to extra_args
         extra_args["device"] = self.params["run_device"]  
@@ -520,7 +508,7 @@ class \
 
 
         # === Call aggregation dispatcher
-        aggregated_update = aggregate_global_model(
+        aggregated_update, client_weights = aggregate_global_model(
             agg_method=agg_method,
             server_model=self.global_model,
             client_grad_dict=client_grad_dict,
@@ -531,10 +519,10 @@ class \
 
         # === Apply aggregated update to global model
         for name, param in self.global_model.state_dict().items():
-            # param.add_(aggregated_update[name].to(param.device))
             update_tensor = aggregated_update[name].to(dtype=param.dtype, device=param.device)
             param.add_(update_tensor)
-
+        
+        return client_weights
 
     def _visualize_tsne(self, iteration, malicious_clients):
         """

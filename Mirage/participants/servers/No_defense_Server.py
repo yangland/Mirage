@@ -17,53 +17,6 @@ class No_defense_Server(BasicServer):
     def __init__(self, params, dataloader, full_train_dataset=None):
         super(No_defense_Server, self).__init__(params, dataloader, full_train_dataset)
 
-        # 查看No_defense_Server的所有参数
-
-    # def broadcast_upload_old(self, iteration, benign_client, malicious_client, **kwargs):
-
-    #     logger.info(f"Training on global iteration {iteration} ")
-
-    #     selected_clients_list, malicious_clients_list = self.select_clients(iteration)
-    #     ''' 记录当前的训练中，有多少个恶意客户端'''
-    #     current_no_of_total_adversaries = 0
-    #     for client_id in selected_clients_list:
-    #         if client_id in malicious_clients_list:
-    #             current_no_of_total_adversaries += 1
-
-
-    #     weight_accumulator = self.create_weight_accumulator()  # 初始化权重累加器, dict类型
-    #     weight_accumulator_by_client = []
-    #     update_norm_list = []
-    #     global_model_copy = self.create_global_model_copy()
-    #     global_model = copy.deepcopy(self.global_model)
-    #     aggregated_model_id = [1] * self.params["no_of_participants_per_iteration"]
-    #     for client_id in tqdm(selected_clients_list):
-    #         if client_id in malicious_clients_list:
-    #             client = malicious_client
-    #         else:
-    #             client = benign_client
-    #         client_train_data = self.train_dataloader[client_id]
-
-    #         local_model = copy.deepcopy(self.global_model)
-
-    #         for name, params in local_model.named_parameters():
-    #             params.requires_grad = True
-
-    #         local_model.train()
-    #         updated_model = client.local_train(iteration, local_model, client_train_data, client_id, test_loader=self.test_dataloader)
-    #         update_norm = model_dist_norm_var(updated_model, global_model_copy)  # 计算更新距离全局模型的二范数
-
-    #         update_norm_list.append(round(update_norm.item(), 6))
-
-    #         weight_accumulator, single_wa = update_weight_accumulator(updated_model, copy.deepcopy(self.global_model),
-    #                                                                   weight_accumulator)
-    #         weight_accumulator_by_client.append(single_wa)
-    #         del local_model
-
-    #     for client_ind,client_id in enumerate(selected_clients_list):
-    #         logger.info(f"Client {client_id} update norm: {update_norm_list[client_ind]}")
-    #     return weight_accumulator, weight_accumulator_by_client, aggregated_model_id
-
     def broadcast_upload(
         self,
         iteration,
@@ -73,6 +26,7 @@ class No_defense_Server(BasicServer):
         malicious_clients_list,
         client_region_mapping,
         canonical_client_for_region,
+        malicious_client_mapping,
         **kwargs
     ):
         logger.info(f"Training on global iteration {iteration} ")
@@ -139,7 +93,8 @@ class No_defense_Server(BasicServer):
 
         # === Step 4: Train clients ===
         for client_id in tqdm(selected_clients_list):
-            client_train_data = self.train_dataloader[client_id]
+            real_id = malicious_client_mapping.get(client_id, client_id)
+            client_train_data = self.train_dataloader[real_id]
 
             # Always create local_model
             local_model = copy.deepcopy(self.global_model)
@@ -149,10 +104,10 @@ class No_defense_Server(BasicServer):
 
             # === Malicious client logic ===
             if client_id in malicious_clients_list:
-                if client_id in already_trained_malicious_clients:
-                    logger.info(f"[Round {iteration}] Reusing cached update for malicious client {client_id}")
-                    single_wa = malicious_update_cache[client_id]['update']
-                    update_norm = malicious_update_cache[client_id]['norm']
+                if real_id in already_trained_malicious_clients:
+                    logger.info(f"[Round {iteration}] Reusing cached update for malicious client {real_id}")
+                    single_wa = malicious_update_cache[real_id]['update']
+                    update_norm = malicious_update_cache[real_id]['norm']
                 else:
                     region_id = client_region_mapping.get(client_id)
 
@@ -160,7 +115,7 @@ class No_defense_Server(BasicServer):
                         iteration=iteration,
                         model=local_model,
                         train_loader=client_train_data,
-                        client_id=client_id,
+                        client_id=real_id,
                         test_loader=self.test_dataloader,
                         region_constraints=region_constraints_dict.get(region_id, {}),
                         region_id=region_id
@@ -172,11 +127,11 @@ class No_defense_Server(BasicServer):
                     )
 
                     update_norm = model_dist_norm_var(updated_model, self.create_global_model_copy()).item()
-                    malicious_update_cache[client_id] = {
+                    malicious_update_cache[real_id] = {
                         'update': single_wa,
                         'norm': round(update_norm, 6)
                     }
-                    already_trained_malicious_clients.add(client_id)
+                    already_trained_malicious_clients.add(real_id)
 
                 weight_accumulator = update_weight_accumulator_direct(single_wa, weight_accumulator)
                 update_norm_by_client[client_id] = round(update_norm, 6)
@@ -207,17 +162,17 @@ class No_defense_Server(BasicServer):
                 weight_accumulator_by_client[client_id] = single_wa
 
             # === Debug info ===
-            if client_id == 0:
-                print("[DEBUG] Checking update flow for client 0")
-                print("Type of updated_model:", type(updated_model))
-                print("Type of global_model:", type(self.global_model))
-                print("State dict keys:", list(updated_model.state_dict().keys())[:5])
-                print("Update norm:", update_norm)
+            # if client_id == 0:
+            #     print("[DEBUG] Checking update flow for client 0")
+            #     print("Type of updated_model:", type(updated_model))
+            #     print("Type of global_model:", type(self.global_model))
+            #     print("State dict keys:", list(updated_model.state_dict().keys())[:5])
+            #     print("Update norm:", update_norm)
 
-            if isinstance(single_wa, dict):
-                print(f"[DEBUG] Client {client_id} update keys: {list(single_wa.keys())[:5]}")
-            else:
-                print(f"[ERROR] Client {client_id}'s update is not a dict → it is {type(single_wa)}: {single_wa}")
+            # if isinstance(single_wa, dict):
+            #     print(f"[DEBUG] Client {client_id} update keys: {list(single_wa.keys())[:5]}")
+            # else:
+            #     print(f"[ERROR] Client {client_id}'s update is not a dict → it is {type(single_wa)}: {single_wa}")
 
             del local_model
 

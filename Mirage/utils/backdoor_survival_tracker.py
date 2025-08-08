@@ -22,8 +22,9 @@ class BackdoorSurvivalTracker:
             ["iteration"] +
             [f"R{rid}_selected" for rid in self.region_ids] +
             [f"R{rid}_ASR" for rid in self.region_ids] +
-            ["acc"]
+            ["acc", "malicious_weight_percent", "malicious_client_ratio"]
         )
+
 
         # Create file and write header if it doesn't exist
         if not os.path.exists(self.csv_path):
@@ -32,7 +33,8 @@ class BackdoorSurvivalTracker:
                 writer.writeheader()
 
 
-    def log_iter_csv(self, iteration, region_id_to_asr, attacked_regions, acc=None):
+    def log_iter_csv(self, iteration, region_id_to_asr, attacked_regions, acc=None,
+                 malicious_weight_percent=None, malicious_client_ratio=None):
         """
         Immediately log iteration info (append one row to CSV).
         Args:
@@ -50,6 +52,8 @@ class BackdoorSurvivalTracker:
             entry[f"R{region_id}_ASR"] = round(asr_value, 4) if asr_value is not None else 0.0
 
         entry["acc"] = round(acc, 4) if acc is not None else ""
+        entry["malicious_weight_percent"] = round(malicious_weight_percent, 4) if malicious_weight_percent is not None else ""
+        entry["malicious_client_ratio"] = round(malicious_client_ratio, 4) if malicious_client_ratio is not None else ""
 
         with open(self.csv_path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.fieldnames)
@@ -61,7 +65,9 @@ def log_backdoor_tracking_csv(
     iteration,
     global_eval_results,
     client_region_mapping,
-    possible_region_ids_list
+    possible_region_ids_list,
+    malicious_weight_percent=None,
+    malicious_client_ratio=None
 ):
     """
     Logs ASR per region and clean accuracy into the CSV via the tracker.
@@ -90,5 +96,8 @@ def log_backdoor_tracking_csv(
         iteration=iteration,
         region_id_to_asr=region_id_to_asr,
         attacked_regions=attacked_regions,
-        acc=clean_acc
+        acc=clean_acc,
+        malicious_weight_percent=malicious_weight_percent,
+        malicious_client_ratio=malicious_client_ratio
     )
+
