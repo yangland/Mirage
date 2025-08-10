@@ -71,11 +71,12 @@ def build_region_constraints(
     # === Shared values ===
     avg_benign_model = stats["avg_benign_model"]
     avg_L2_norm = stats["avg_L2_norm"]
-    avg_cosine_distance = stats["avg_update_cos_d"]
+    avg_pairwise_cosine_distance = stats["avg_update_cos_d"]
+    avg_update_cos_d_to_benign = stats["avg_update_cos_d_to_benign"]
 
     r_min = avg_L2_norm * l2_scale_min
     r_max = avg_L2_norm * l2_scale_max
-    cosine_threshold = avg_cosine_distance * cos_scale_min
+    cosine_threshold = avg_update_cos_d_to_benign * cos_scale_min
 
     # === Region R1: Small norm, aligned ===
     constraints[1] = {
@@ -161,6 +162,7 @@ def search_k_percent_to_fix_geometry(delta_theta, delta_b, update_cone_mode, cos
     """
     delta_original = delta_theta.clone()
     low, high = 0, 100
+    best_k = None
     best_delta = delta_original
     found_valid = False
 
@@ -184,47 +186,36 @@ def search_k_percent_to_fix_geometry(delta_theta, delta_b, update_cone_mode, cos
 
         if valid:
             found_valid = True
+            best_k = mid
             best_delta = modified_delta
-            high = mid - 1  # Try smaller k
+            high = mid - 1
         else:
-            low = mid + 1  # Try larger k
+            low = mid + 1
 
-    return best_delta, (low if found_valid else None)
+    return best_delta, best_k
+
 
 
 def replace_k_percent_with_target(delta_theta, delta_b, k_percent, update_cone_mode):
     """
-    Replace the k% most misaligned elements in delta_theta with corresponding values
-    from delta_b or -delta_b to improve geometric alignment.
-
-    Args:
-        delta_theta (Tensor): The candidate/malicious update.
-        delta_b (Tensor): The benign update direction (reference).
-        k_percent (float): Percentage (0.0 to 1.0) of elements to replace.
-        update_cone_mode (int): 
-            - 1 for aligning with delta_b
-            - -1 for aligning with -delta_b
-
-    Returns:
-        Tensor: Modified delta_theta.
+    Replace k% of entries that hurt alignment the most.
+    For align mode (+1): smallest contributions to dot(Δ, Δb) get replaced.
+    For oppose mode (-1): smallest contributions to dot(Δ, -Δb) get replaced.
     """
-    delta = delta_theta.clone()
-    target_direction = delta_b if update_cone_mode == 1 else -delta_b
+    target = delta_b if update_cone_mode == 1 else -delta_b
+    contrib = delta_theta * target  # per-dim contribution to alignment
 
-    # Compute alignment scores between delta_theta and target_direction
-    alignment_scores = delta * target_direction  # Element-wise similarity
+    numel = delta_theta.numel()
+    k = int(round(k_percent * numel))
+    if k <= 0:
+        return delta_theta
 
-    k = int(len(delta) * k_percent)
-    if k == 0:
-        return delta
+    # indices that most hurt alignment (smallest contrib)
+    idx = torch.topk(contrib, k, largest=False).indices
+    modified = delta_theta.clone()
+    modified[idx] = target[idx]
+    return modified
 
-    # Find indices of the k most misaligned elements (lowest alignment score)
-    _, indices_to_replace = torch.topk(alignment_scores, k, largest=False)
-
-    # Replace delta_theta values at those indices with values from target_direction
-    delta[indices_to_replace] = target_direction[indices_to_replace]
-
-    return delta
 
 
 
@@ -280,6 +271,11 @@ def check_cos_constraint(delta_theta, delta_b, update_cone_mode, cosine_threshol
 
 
 
+from copy import deepcopy
+import torch
+import torch.nn.functional as F
+import numpy as np
+
 def compute_benign_statistics(benign_models, server_model):
     """
     Computes:
@@ -288,6 +284,7 @@ def compute_benign_statistics(benign_models, server_model):
     - avg_L2_norm: average norm of model updates from server
     - avg_update_cos_d: average cosine angle between benign updates
     - avg_weight_cos_d: average cosine angle between benign model weights
+    - avg_update_cos_d_to_benign: average cosine distance of each update to the benign-average update  # NEW
     """
     M = len(benign_models)
     assert M > 1, "Need at least 2 clients for statistics"
@@ -305,11 +302,15 @@ def compute_benign_statistics(benign_models, server_model):
     avg_model = deepcopy(benign_models[0])
     avg_model.load_state_dict(avg_benign_state)
 
+    # --- NEW: benign-average update vector Δθ̄ = θ̄_b - θ_server ---
+    delta_avg = flatten_model(avg_model) - flatten_model(server_model)  # NEW
+
     # === Compute statistics ===
     update_dists = []
     weight_dists = []
     l2_dists = []
     l2_norms = []
+    update_to_benign_dists = []  # NEW
 
     for i in range(M):
         model_i = benign_models[i]
@@ -317,6 +318,10 @@ def compute_benign_statistics(benign_models, server_model):
         # L2 norm from server model (‖Δθ_i‖)
         delta_i = flatten_model(model_i) - flatten_model(server_model)
         l2_norms.append(torch.norm(delta_i, p=2).item())
+
+        # --- NEW: cosine distance between Δθ_i and Δθ̄ ---
+        cos_sim_to_avg = F.cosine_similarity(delta_i.unsqueeze(0), delta_avg.unsqueeze(0)).item()  # NEW
+        update_to_benign_dists.append(1 - cos_sim_to_avg)  # NEW
 
         for j in range(i + 1, M):
             model_j = benign_models[j]
@@ -338,9 +343,57 @@ def compute_benign_statistics(benign_models, server_model):
         "avg_L2_norm": np.mean(l2_norms),
         "avg_update_cos_d": np.mean(update_dists),
         "avg_weight_cos_d": np.mean(weight_dists),
+        "avg_update_cos_d_to_benign": np.mean(update_to_benign_dists),  # NEW
     }
 
     return stat
+
+
+
+@torch.no_grad()
+def project_update_inplace_(model: torch.nn.Module,
+                            center_model: torch.nn.Module,
+                            radius: float) -> None:
+    """Project θ onto the L2 ball around center with radius, in-place."""
+    theta  = flatten_model(model)
+    center = flatten_model(center_model)
+
+    diff = theta - center
+    norm = diff.norm(p=2)
+
+    if norm > radius:
+        theta_proj = center + diff * (radius / (norm + 1e-12))
+        _assign_flat_params_(model, theta_proj)  # in-place copy into existing params
+
+
+@torch.no_grad()
+def scale_update_to_l2_boundary_inplace_(model: torch.nn.Module,
+                                         center_model: torch.nn.Module,
+                                         radius: float) -> None:
+    """Scale Δ = θ - center to have ‖Δ‖2 = radius, in-place."""
+    theta  = flatten_model(model)
+    center = flatten_model(center_model)
+    delta  = theta - center
+    norm   = delta.norm()
+
+    if norm < 1e-12:
+        print("[WARNING] Update norm too small; skip scaling.")
+        return
+
+    theta_scaled = center + delta * (radius / (norm + 1e-12))
+    _assign_flat_params_(model, theta_scaled)  # in-place copy
+
+
+@torch.no_grad()
+def _assign_flat_params_(model: torch.nn.Module, flat: torch.Tensor) -> None:
+    """Copy a flat vector into model parameters without re-creating tensors."""
+    offset = 0
+    for p in model.parameters():
+        n = p.numel()
+        p.copy_(flat[offset:offset+n].view_as(p))
+        offset += n
+
+
 
 
 def project_model_into_region(model, center_model, radius):
@@ -358,36 +411,6 @@ def project_model_into_region(model, center_model, radius):
 
     return unflatten_model(theta, model)
 
-
-# def compute_geo_loss(delta_theta, theta, global_model, avg_benign_model, region_id):
-#     if region_id == 1:  # 𝓧₁: No geo loss
-#         return 0.0
-
-#     elif region_id == 2:  # 𝓧₂: Update cone
-#         delta_b = flatten_model(avg_benign_model) - flatten_model(global_model)
-#         cos_sim = F.cosine_similarity(delta_theta.unsqueeze(0), 
-#                                       delta_b.unsqueeze(0), 
-#                                       eps=1e-8
-#                                       ).item()
-#         return -cos_sim
-
-#     elif region_id == 4:  # 𝓧₃: Weight cone
-#         theta_b = flatten_model(avg_benign_model)
-#         theta_new = flatten_model(theta)
-#         delta = theta_new - theta_b
-        
-#         if torch.norm(theta_b) == 0 or torch.norm(delta) == 0:
-#             print("[WARNING] Zero norm in geo loss for region 4")
-#             return 0.0
-        
-#         cos_sim = F.cosine_similarity(delta.unsqueeze(0),
-#                                       theta_b.unsqueeze(0), 
-#                                       eps=1e-8
-#                                     ).item()
-#         return -cos_sim
-
-#     else:  # 𝓧₄ or others
-#         return 0.0
 
 
 def apply_delta_to_model(base_model, delta_theta):
@@ -418,7 +441,7 @@ def compute_geo_loss(delta_theta, delta_b, update_cone_mode, threshold=1e-6):
 
     if norm_theta.item() < threshold or norm_b.item() < threshold:
         # Return a zero loss that supports autograd
-        return torch.tensor(0.0, device=delta_theta.device, requires_grad=True)
+        return (delta_theta * 0.0).sum() # graph-connected zero
 
     # Cosine similarity ∈ [-1, 1], clamp to avoid numerical issues
     cos_sim = F.cosine_similarity(delta_theta.unsqueeze(0), delta_b.unsqueeze(0), eps=1e-8)

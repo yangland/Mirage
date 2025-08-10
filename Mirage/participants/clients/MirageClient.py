@@ -10,7 +10,8 @@ from tqdm import tqdm
 from participants.clients.BasicClient import BasicClient
 from utils.utils import poisoned_batch_injection
 from utils.regoin_utils import flatten_model, compute_geo_loss, project_model_into_region, \
-    search_k_percent_to_fix_geometry, apply_delta_to_model, check_cos_constraint, scale_model_update_to_l2_boundary
+    search_k_percent_to_fix_geometry, apply_delta_to_model, check_cos_constraint, scale_model_update_to_l2_boundary, \
+    project_update_inplace_, scale_update_to_l2_boundary_inplace_, _assign_flat_params_
 from utils.visualize import visualize, visualize_batch, visualize_tsne
 import torch.nn.functional as F
 
@@ -341,7 +342,6 @@ class MirageClient(BasicClient):
                 # print(f"[DEBUG] labels range: {labels.min().item()} to {labels.max().item()}")
                 # print(f"[DEBUG] outputs contains NaN: {torch.isnan(outputs).any().item()}, Inf: {torch.isinf(outputs).any().item()}")
 
-
                 # Compute Δθ (current update)
                 delta_theta = flatten_model(cache_model) - flatten_model(global_model)
                 norm_theta = delta_theta.norm().item()
@@ -371,19 +371,13 @@ class MirageClient(BasicClient):
                 total_loss.backward()
                 optimizer.step()
 
-                # === Project back into L2 region  ===
-                cache_model = project_model_into_region(
-                    model=cache_model,
-                    center_model=global_model,
-                    radius=l2_radius
-                )
+                # === Project back into L2 region if exceed L2 radius ===
+                project_update_inplace_(cache_model, global_model, l2_radius)
 
-        # After poisoned training loop, make the L2 norm as required
-        cache_model = scale_model_update_to_l2_boundary(
-            cache_model=cache_model,
-            global_model=global_model,
-            l2_radius=l2_radius
-        )
+
+        # After poisoned training loop, make sure the L2 norm as required
+        scale_update_to_l2_boundary_inplace_(cache_model, global_model, l2_radius)
+
 
         # === Step 5: Validate Geometry ===
         delta_theta = flatten_model(cache_model) - flatten_model(global_model)
@@ -396,12 +390,12 @@ class MirageClient(BasicClient):
             cosine_threshold=cosine_threshold
         )
 
-        # === Step 6: Binary Search for Sign Flipping if Invalid ===
+        # === Step 6: Binary Search for Value Replacement if Invalid ===
         if not is_valid:
             logger.warning(
                             f"[Iteration {iteration}] Client {client_id} violates geo constraint. "
                             f"cos_dist = {crafted_cos_dist:.4f}, threshold = {cosine_threshold:.4f}. "
-                            "Starting binary search sign flipping."
+                            "Starting binary search for k% replacement."
                             )
             fixed_delta, final_k = search_k_percent_to_fix_geometry(
                 delta_theta=delta_theta,
@@ -411,15 +405,17 @@ class MirageClient(BasicClient):
             )
 
             if final_k is not None:
-                logger.info(f"[Fix] Client {client_id} — Constraint fixed with bottom {final_k}% sign flipping.")
+                logger.info(f"[Fix] Client {client_id} — Constraint fixed with bottom {final_k}% replaced.")
                 cache_model = apply_delta_to_model(global_model, fixed_delta)
 
-                # Optional: Reproject after flipping
-                # cache_model = project_model_into_region(
-                #     model=cache_model,
-                #     center_model=avg_benign_model,
-                #     radius=l2_radius
-                # )
+                # ensure exact L2 radius without changing direction
+                scale_update_to_l2_boundary_inplace_(cache_model, global_model, l2_radius)
+
+                # optional: re-check
+                delta_theta = flatten_model(cache_model) - flatten_model(global_model)
+                ok, cos_d = check_cos_constraint(delta_theta, delta_b, update_cone_mode, cosine_threshold)
+                if not ok:
+                    logger.warning(f"[Fix] Cosine check failed after scaling (cos_dist={cos_d:.4f}).")
             else:
                 logger.warning(f"[Fix] Client {client_id} — Could NOT fix constraint with ≤100% flipping.")
 

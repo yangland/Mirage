@@ -467,7 +467,7 @@ class \
         
         # === Convert list of state_dicts to dict[str, state_dict]
         client_grad_dict = {
-            f"client_{client_id}": update
+            client_id: update
             for client_id, update in weight_accumulator_by_client.items()
         }
 

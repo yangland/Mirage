@@ -71,6 +71,7 @@ class No_defense_Server(BasicServer):
             logger.info(f"[DEBUG] Mean pairwise L2 distance: {region_stats['avg_L2_dist']:.4f}")
             logger.info(f"[DEBUG] Mean L2 norm of updates: {region_stats['avg_L2_norm']:.4f}")
             logger.info(f"[DEBUG] Mean cos dist between updates: {region_stats['avg_update_cos_d']:.8f}")
+            logger.info(f"[DEBUG] Mean cos dist between updates and benign: {region_stats['avg_update_cos_d_to_benign']:.8f}")
             logger.info(f"[DEBUG] Mean cos dist between weights: {region_stats['avg_weight_cos_d']:.8f}")
 
             region_constraints_dict = build_region_constraints(

@@ -175,9 +175,6 @@ if __name__ == "__main__":
             strategy=params_loaded.get("clients_region_map", "by_order"),
             predefined_id_set=params_loaded.get("predefined_id_set", None)
         )
-        logger.info(f"[Round {iteration}] Region assignments: {client_region_mapping}")
-        
-        
         
         # === Step 4: Broadcast model to clients (including poisoned clients)
         (
@@ -197,18 +194,18 @@ if __name__ == "__main__":
 
 
         # === Step 5: Aggregate model
-        # print(f"[DEBUG] Global model keys: {list(server.global_model.state_dict().keys())}")
         client_weights = server.aggregation(
             agg_method=params_loaded["agg_method"],
             weight_accumulator_by_client=weight_accumulator_by_client
             )
         
+        logger.info(f"[Round {iteration}] Client weights: {client_weights}")
         
         # Analyze malicious weight
         malicious_stats = analyze_malicious_contribution(
             client_weights=client_weights,
             selected_clients=selected_clients,
-            selected_malicious_clients=selected_malicious_clients,
+            selected_malicious_clients=virtual_malicious_clients,
             logger=logger
         )
 
