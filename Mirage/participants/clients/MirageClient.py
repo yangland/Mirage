@@ -8,7 +8,7 @@ from torch import nn
 import numpy as np
 from tqdm import tqdm
 from participants.clients.BasicClient import BasicClient
-from utils.utils import poisoned_batch_injection
+from utils.utils import poisoned_batch_injection, test_model_asr_acc
 from utils.regoin_utils import flatten_model, compute_geo_loss, project_model_into_region, \
     search_k_percent_to_fix_geometry, apply_delta_to_model, check_cos_constraint, scale_model_update_to_l2_boundary, \
     project_update_inplace_, scale_update_to_l2_boundary_inplace_, _assign_flat_params_
@@ -374,9 +374,41 @@ class MirageClient(BasicClient):
                 # === Project back into L2 region if exceed L2 radius ===
                 project_update_inplace_(cache_model, global_model, l2_radius)
 
+        # --- TEST[1] BEFORE final L2 scaling ---
+        if test_loader is not None:  # NEW: local eval
+            m_pre = test_model_asr_acc(
+                model=cache_model,
+                test_dataloader=test_loader,
+                device=device,
+                trigger=trigger_,
+                mask=mask_,
+                client_id=client_id,
+                region_id=region_id,
+                poisoned_batch_injection=poisoned_batch_injection
+            )
+            logger.info(f"[LocalEval][Client {client_id}] pre-scale: "
+                        f"clean_acc={m_pre['clean_acc']*100:.2f}%, "
+                        f"ASR={m_pre['asr']*100:.2f}%")
 
         # After poisoned training loop, make sure the L2 norm as required
         scale_update_to_l2_boundary_inplace_(cache_model, global_model, l2_radius)
+
+
+        # --- TEST[2] AFTER final L2 scaling ---
+        if test_loader is not None:  # NEW: local eval
+            m_post = test_model_asr_acc(
+                model=cache_model,
+                test_dataloader=test_loader,
+                device=device,
+                trigger=trigger_,
+                mask=mask_,
+                client_id=client_id,
+                region_id=region_id,
+                poisoned_batch_injection=poisoned_batch_injection
+            )
+            logger.info(f"[LocalEval][Client {client_id}] post-scale: "
+                        f"clean_acc={m_post['clean_acc']*100:.2f}%, "
+                        f"ASR={m_post['asr']*100:.2f}%")
 
 
         # === Step 5: Validate Geometry ===
@@ -410,6 +442,22 @@ class MirageClient(BasicClient):
 
                 # ensure exact L2 radius without changing direction
                 scale_update_to_l2_boundary_inplace_(cache_model, global_model, l2_radius)
+
+                # --- TEST[3] AFTER binary replacement + rescale ---
+                if test_loader is not None:  # NEW: local eval
+                    m_fix = test_model_asr_acc(
+                        model=cache_model,
+                        test_dataloader=test_loader,
+                        device=device,
+                        trigger=trigger_,
+                        mask=mask_,
+                        client_id=client_id,
+                        region_id=region_id,
+                        poisoned_batch_injection=poisoned_batch_injection
+                    )
+                    logger.info(f"[LocalEval][Client {client_id}] post-binary-fix: "
+                                f"clean_acc={m_fix['clean_acc']*100:.2f}%, "
+                                f"ASR={m_fix['asr']*100:.2f}%")
 
                 # optional: re-check
                 delta_theta = flatten_model(cache_model) - flatten_model(global_model)

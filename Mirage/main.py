@@ -181,6 +181,7 @@ if __name__ == "__main__":
             weight_accumulator,
             weight_accumulator_by_client,
             aggregated_model_id,
+            region_constraints_dict
         ) = server.broadcast_upload(
             iteration=iteration,
             benign_client=benign_client,
@@ -239,7 +240,9 @@ if __name__ == "__main__":
             client_region_mapping=client_region_mapping,
             possible_region_ids_list=possible_region_ids_list,
             malicious_weight_percent=malicious_stats["malicious_weight_percent"],
-            malicious_client_ratio=malicious_stats["malicious_client_ratio"]
+            malicious_client_ratio=malicious_stats["malicious_client_ratio"],
+            region_constraints_dict=region_constraints_dict,
+            selected_clients_list=virtual_malicious_clients
         )
 
         

@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import numpy as np
 from collections import defaultdict
 from copy import deepcopy
+import random
 
 def flatten_model(model):
     return torch.cat([p.data.view(-1) for p in model.parameters()])
@@ -48,35 +49,63 @@ def get_region_id(in_l2, in_update_cone, in_weight_cone):
     return (in_weight_cone << 2) | (in_update_cone << 1) | in_l2
 
 
+
 def build_region_constraints(
     stats,
-    l2_scale_min=1.5,
-    l2_scale_max=10.0,
-    cos_scale_min=0.75
+    l2_scale_min=1.5,          # float or [low, high]
+    l2_scale_max=10.0,         # float or [low, high]
+    cos_scale_min=0.75,        # float or [low, high], capped at 1.0 after scaling
+    rng: random.Random = None,  # optional seeded RNG
+    logger=None
 ):
-    """
-    Build constraint dicts for regions R1–R4 using L2 and cosine constraints.
+    if rng is None:
+        rng = random
 
-    Args:
-        stats: Dictionary with benign model statistics (from compute_benign_statistics)
-        l2_scale_min: Minimum scaling factor for L2 norm (e.g., 1.5)
-        l2_scale_max: Maximum scaling factor for L2 norm (e.g., 10)
-        cos_scale_min: Scaling factor for cosine threshold (e.g., 0.75)
+    def _sample(spec, name: str) -> float:
+        if isinstance(spec, (list, tuple)) and len(spec) == 2:
+            lo, hi = float(spec[0]), float(spec[1])
+            if lo > hi:
+                lo, hi = hi, lo
+            val = rng.uniform(lo, hi)
+            logger.info(f"[Constraints] Sampled {name} in [{lo:.3f}, {hi:.3f}] -> {val:.3f}")  # NEW
+            return val
+        val = float(spec)
+        logger.info(f"[Constraints] Using {name} scalar -> {val:.3f}")  # NEW
+        return val
 
-    Returns:
-        Dictionary mapping region_id to constraint dict
-    """
     constraints = {}
 
     # === Shared values ===
     avg_benign_model = stats["avg_benign_model"]
-    avg_L2_norm = stats["avg_L2_norm"]
-    avg_pairwise_cosine_distance = stats["avg_update_cos_d"]
-    avg_update_cos_d_to_benign = stats["avg_update_cos_d_to_benign"]
+    avg_L2_norm = float(stats["avg_L2_norm"])
+    avg_update_cos_d_to_benign = float(stats["avg_update_cos_d_to_benign"])
 
-    r_min = avg_L2_norm * l2_scale_min
-    r_max = avg_L2_norm * l2_scale_max
-    cosine_threshold = avg_update_cos_d_to_benign * cos_scale_min
+    # --- Sample scales ---
+    s_small = _sample(l2_scale_min, "l2_scale_min")   # NEW
+    s_large = _sample(l2_scale_max, "l2_scale_max")   # NEW
+    s_cos   = _sample(cos_scale_min, "cos_scale_min") # NEW
+
+    # Disjointness guard
+    if s_large <= s_small:
+        eps = max(1e-6, 0.01 * max(abs(s_small), 1.0))
+        s_large = s_small + eps
+        logger.warning(f"[Constraints] l2_scale_max <= l2_scale_min; adjusted l2_scale_max to {s_large:.6f}")  # NEW
+
+    # Derived radii
+    r_min = avg_L2_norm * s_small
+    r_max = avg_L2_norm * s_large
+
+    # Aligned cosine threshold (cap at 1.0)
+    cosine_threshold_aligned = min(1.0, avg_update_cos_d_to_benign * s_cos)
+
+    logger.info(  # NEW
+        "[Constraints] Round scales: s_small=%.6f, s_large=%.6f, s_cos=%.6f",
+        s_small, s_large, s_cos
+    )
+    logger.info(  # NEW
+        "[Constraints] Radii/thresholds: r_min=%.6f, r_max=%.6f, aligned_cos_thresh=%.6f",
+        r_min, r_max, cosine_threshold_aligned
+    )
 
     # === Region R1: Small norm, aligned ===
     constraints[1] = {
@@ -84,7 +113,9 @@ def build_region_constraints(
         "avg_benign_weight": avg_benign_model,
         "l2_radius": r_min,
         "update_cone_mode": 1,
-        "cosine_threshold": cosine_threshold,
+        "cosine_threshold": cosine_threshold_aligned,
+        "l2_scale": s_small,                # NEW
+        "cos_scale": s_cos,                 # NEW
     }
 
     # === Region R2: Large norm, aligned ===
@@ -93,7 +124,9 @@ def build_region_constraints(
         "avg_benign_weight": avg_benign_model,
         "l2_radius": r_max,
         "update_cone_mode": 1,
-        "cosine_threshold": cosine_threshold,
+        "cosine_threshold": cosine_threshold_aligned,
+        "l2_scale": s_large,               # NEW
+        "cos_scale": s_cos,                # NEW
     }
 
     # === Region R3: Small norm, opposite direction ===
@@ -103,6 +136,8 @@ def build_region_constraints(
         "l2_radius": r_min,
         "update_cone_mode": -1,
         "cosine_threshold": 1.0,
+        "l2_scale": s_small,               # NEW
+        "cos_scale": None,                 # NEW
     }
 
     # === Region R4: Large norm, opposite direction ===
@@ -112,43 +147,13 @@ def build_region_constraints(
         "l2_radius": r_max,
         "update_cone_mode": -1,
         "cosine_threshold": 1.0,
+        "l2_scale": s_large,               # NEW
+        "cos_scale": None,                 # NEW
     }
 
     return constraints
 
 
-
-def search_k_percent_to_fix_geometry_old(delta_theta, delta_b, update_cone_mode, cosine_threshold):
-    """
-    Binary search for the minimum k% to flip that makes the geometric constraint valid.
-    Returns:
-        - fixed_delta_theta, final_k_percent
-    """
-    delta_original = delta_theta.clone()
-    low, high = 0, 100
-    best_delta = delta_original
-    found_valid = False
-
-    while low <= high:
-        mid = (low + high) // 2
-        k = mid / 100.0
-        flipped_delta = flip_bottom_k_percent(delta_original, k)
-
-        valid, _ = check_cos_constraint(
-            delta_theta=flipped_delta,
-            delta_b=delta_b,
-            update_cone_mode=update_cone_mode,
-            cosine_threshold=cosine_threshold
-        )
-
-        if valid:
-            found_valid = True
-            best_delta = flipped_delta
-            high = mid - 1  # Try smaller k
-        else:
-            low = mid + 1  # Try larger k
-
-    return best_delta, (low if found_valid else None)
 
 
 def search_k_percent_to_fix_geometry(delta_theta, delta_b, update_cone_mode, cosine_threshold):

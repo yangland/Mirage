@@ -79,6 +79,7 @@ class No_defense_Server(BasicServer):
                 l2_scale_min=self.params.get("l2_scale_min"),
                 l2_scale_max=self.params.get("l2_scale_max"),
                 cos_scale_min=self.params.get("cos_scale_min"),
+                logger=logger
             )
         else:
             logger.warning("Not enough benign-like models to compute region statistics.")
@@ -87,6 +88,28 @@ class No_defense_Server(BasicServer):
         # === Step 3: Logging region assignments ===
         logger.info(f"[Round {iteration}] Using externally provided region assignments: {client_region_mapping}")
         logger.info(f"[Round {iteration}] selected_clients_list: {selected_clients_list}")
+
+        # Log constraints ONLY for regions actually attacked this round
+        attacked_regions_this_round = sorted({
+            rid for cid, rid in client_region_mapping.items()
+            if cid in selected_clients_list
+        })
+
+        if not attacked_regions_this_round:
+            logger.info(f"[Round {iteration}] No malicious regions attacked this round.")
+        else:
+            for rid in attacked_regions_this_round:
+                c = region_constraints_dict.get(rid, {})
+                if not c:
+                    continue
+                mode = "align" if c["update_cone_mode"] == 1 else "oppose"
+                logger.info(
+                    f"[Round {iteration}] R{rid}: l2_radius={c['l2_radius']:.6f}, "
+                    f"mode={mode}, cosine_threshold={c['cosine_threshold']:.6f}, "
+                    f"l2_scale={c.get('l2_scale', float('nan')):.6f}, "
+                    f"cos_scale={c.get('cos_scale', None)}"
+                )
+
 
         # === Cache for already trained malicious clients ===
         malicious_update_cache = {}
@@ -199,4 +222,5 @@ class No_defense_Server(BasicServer):
             weight_accumulator,
             weight_accumulator_by_client,
             aggregated_model_id,
+            region_constraints_dict
         )

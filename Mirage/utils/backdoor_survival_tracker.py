@@ -2,6 +2,7 @@
 
 import csv
 import os
+import json
 
 class BackdoorSurvivalTracker:
     def __init__(self, save_dir, region_ids, filename="backdoor_tracking_log.csv"):
@@ -22,7 +23,9 @@ class BackdoorSurvivalTracker:
             ["iteration"] +
             [f"R{rid}_selected" for rid in self.region_ids] +
             [f"R{rid}_ASR" for rid in self.region_ids] +
-            ["acc", "malicious_weight_percent", "malicious_client_ratio"]
+            ["acc", "malicious_weight_percent", "malicious_client_ratio"] +
+            ["per_client_l2_values", "per_client_cos_values",
+             "per_client_l2_scales", "per_client_cos_scales"]
         )
 
 
@@ -34,20 +37,12 @@ class BackdoorSurvivalTracker:
 
 
     def log_iter_csv(self, iteration, region_id_to_asr, attacked_regions, acc=None,
-                 malicious_weight_percent=None, malicious_client_ratio=None):
-        """
-        Immediately log iteration info (append one row to CSV).
-        Args:
-            iteration (int): Current training round
-            region_id_to_asr (dict): Mapping from region ID → ASR (float)
-            attacked_regions (list[int]): Region IDs that were attacked this round
-            acc (float or None): Accuracy value to log
-        """
+                     malicious_weight_percent=None, malicious_client_ratio=None,
+                     per_client_l2_values=None, per_client_cos_values=None,          # NEW
+                     per_client_l2_scales=None, per_client_cos_scales=None):         # NEW
         entry = {"iteration": iteration}
         for region_id in self.region_ids:
             entry[f"R{region_id}_selected"] = 1 if region_id in attacked_regions else 0
-
-            # Safely get ASR value and handle None
             asr_value = region_id_to_asr.get(region_id)
             entry[f"R{region_id}_ASR"] = round(asr_value, 4) if asr_value is not None else 0.0
 
@@ -55,9 +50,16 @@ class BackdoorSurvivalTracker:
         entry["malicious_weight_percent"] = round(malicious_weight_percent, 4) if malicious_weight_percent is not None else ""
         entry["malicious_client_ratio"] = round(malicious_client_ratio, 4) if malicious_client_ratio is not None else ""
 
+        # NEW: store lists-of-lists as JSON strings
+        entry["per_client_l2_values"]  = json.dumps(per_client_l2_values  or [])
+        entry["per_client_cos_values"] = json.dumps(per_client_cos_values or [])
+        entry["per_client_l2_scales"]  = json.dumps(per_client_l2_scales  or [])
+        entry["per_client_cos_scales"] = json.dumps(per_client_cos_scales or [])
+
         with open(self.csv_path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.fieldnames)
             writer.writerow(entry)
+
 
 
 def log_backdoor_tracking_csv(
@@ -67,18 +69,10 @@ def log_backdoor_tracking_csv(
     client_region_mapping,
     possible_region_ids_list,
     malicious_weight_percent=None,
-    malicious_client_ratio=None
+    malicious_client_ratio=None,
+    region_constraints_dict=None,      # NEW
+    selected_clients_list=None         # NEW
 ):
-    """
-    Logs ASR per region and clean accuracy into the CSV via the tracker.
-
-    Args:
-        tracker (BackdoorSurvivalTracker): CSV logger instance.
-        iteration (int): Current training round.
-        global_eval_results (dict): Output of test_global_model().
-        client_region_mapping (dict): Mapping from client ID to region ID.
-        possible_region_ids_list (list[int]): List of region IDs in consideration.
-    """
     # Extract attacked regions from client-region mapping
     attacked_regions = list(set(client_region_mapping.values()))
 
@@ -87,9 +81,24 @@ def log_backdoor_tracking_csv(
         rid: global_eval_results["asr"].get(rid, {}).get("asr", None)
         for rid in possible_region_ids_list
     }
-
     # Clean accuracy
     clean_acc = global_eval_results.get("clean_acc", None)
+
+    # --- NEW: per-client values/scales as lists-of-lists
+    per_client_l2_values, per_client_cos_values = [], []
+    per_client_l2_scales, per_client_cos_scales = [], []
+    if region_constraints_dict and selected_clients_list:
+        for cid in selected_clients_list:
+            rid = client_region_mapping.get(cid)
+            c = region_constraints_dict.get(rid, {})
+            if not c:
+                continue
+            # shape: [client_id, region_id, value]
+            per_client_l2_values.append([int(cid), int(rid), float(c["l2_radius"])])
+            per_client_cos_values.append([int(cid), int(rid), float(c["cosine_threshold"])])
+            per_client_l2_scales.append([int(cid), int(rid), float(c.get("l2_scale", float("nan")))])
+            cos_scale_val = c.get("cos_scale", None)
+            per_client_cos_scales.append([int(cid), int(rid), None if cos_scale_val is None else float(cos_scale_val)])
 
     # Write to CSV
     tracker.log_iter_csv(
@@ -98,6 +107,9 @@ def log_backdoor_tracking_csv(
         attacked_regions=attacked_regions,
         acc=clean_acc,
         malicious_weight_percent=malicious_weight_percent,
-        malicious_client_ratio=malicious_client_ratio
+        malicious_client_ratio=malicious_client_ratio,
+        per_client_l2_values=per_client_l2_values,        # NEW
+        per_client_cos_values=per_client_cos_values,      # NEW
+        per_client_l2_scales=per_client_l2_scales,        # NEW
+        per_client_cos_scales=per_client_cos_scales       # NEW
     )
-

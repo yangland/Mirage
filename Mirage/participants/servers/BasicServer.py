@@ -10,7 +10,7 @@ from torch.nn import functional as F
 
 import models.resnet
 import models.vgg
-from utils.utils import poisoned_batch_injection
+from utils.utils import poisoned_batch_injection, test_model_asr_acc
 from utils.visualize import visualize, visualize_batch, visualize_tsne
 from aggr import aggregate_global_model
 from aggr.fltrust import create_fl_trust_root_dataset
@@ -148,139 +148,32 @@ class \
         return selected_clients, selected_malicious_clients
 
 
-    # def test_global_model(self, iteration, malicious_clients):
-    #     """
-    #     Evaluate the global model: clean accuracy and ASR for each attacker.
-    #     Returns a dictionary with clean accuracy/loss and ASR info.
-    #     """
-    #     results = {
-    #         "clean_acc": None,
-    #         "clean_loss": None,
-    #         "asr": {}
-    #     }
-
-    #     # === Clean evaluation
-    #     acc, acc_loss = self.test_model_once(iteration, self.test_dataloader, is_poisoned=False)
-    #     self.acc_list.append(acc)
-    #     results["clean_acc"] = acc
-    #     results["clean_loss"] = acc_loss
-
-    #     logger.info(f"{'-'*55}")
-    #     logger.info(f"| Test Global model in iteration {iteration}")
-    #     logger.info(f"| Loss {acc_loss:.4f}, Acc {acc * 100:.2f}%")
-
-    #     # === ASR evaluation (if poisoned round)
-    #     if iteration >= self.params["poisoned_start_iteration"]:
-    #         for attacker_id in range(self.params["no_of_total_adversaries"]):
-    #             trigger = malicious_clients.trigger_set[attacker_id]
-    #             mask = malicious_clients.mask_set[attacker_id]
-    #             label_swap = self.params["poison_label_swap"][attacker_id]
-
-    #             asr, loss = self.test_model_once(
-    #                 iteration,
-    #                 self.test_dataloader,
-    #                 is_poisoned=True,
-    #                 trigger=trigger,
-    #                 mask=mask,
-    #                 label_swap=label_swap
-    #             )
-
-    #             self.acc_p_list[attacker_id].append(asr)
-    #             logger.info(f"| Attacker {attacker_id}: Loss {loss:.4f}, ASR {asr * 100:.2f}%")
-
-    #             results["asr"][attacker_id] = {
-    #                 "asr": asr,
-    #                 "loss": loss
-    #             }
-
-    #     logger.info(f"{'-'*55}")
-
-    #     if iteration % 50 == 0:
-    #         logger.info(f"acc_list: {self.acc_list}")
-    #         for i in range(self.params["no_of_total_adversaries"]):
-    #             logger.info(f"ASR of attacker {i}: {self.acc_p_list[i]}")
-
-    #     # Optional: TSNE visualization
-    #     show_tsne = False
-    #     if show_tsne and (iteration % 10 == 0 or (
-    #             self.params["malicious_train_algo"] == "Mirage"
-    #             and iteration % 3 == 0
-    #             and iteration - self.params["start_save_iteration"] <= 101)):
-    #         self._visualize_tsne(iteration, malicious_clients)
-
-    #     return results
-
-
-    # def test_model_once(self, iteration, test_dataloader, is_poisoned=False, model=None, trigger=None, mask=None,
-    #                     label_swap=0):
-    #     '''
-    #     test model
-    #     :param iteration: current iterations
-    #     :param test_dataloader:  test dataloader
-    #     :param is_poisoned: is poison
-    #     :param trigger: trigger for testing, shape, (channel, height, width)
-    #     :param mask: trigger mask, shape (channel, height, width)
-    #     :param label_swap: labels
-    #     :return: results，acc, loss
-    #     '''
-    #     if model is None:
-    #         model = copy.deepcopy(self.global_model)
-    #     model.eval()
-    #     with torch.no_grad():
-    #         total_loss = 0.
-    #         total_correct = 0.
-    #         total_num = 0.
-
-    #         criterion = nn.CrossEntropyLoss(reduction='sum')
-    #         for i, batch in enumerate(test_dataloader):
-    #             if is_poisoned:
-    #                 # 如果需要测试ASR，则需要对batch进行投毒
-    #                 sample_indices = ~(batch[1] == label_swap)
-    #                 samples = batch[0][sample_indices]
-    #                 labels = batch[1][sample_indices]
-    #                 batch = poisoned_batch_injection(batch=(samples, labels), 
-    #                                                  trigger=trigger, 
-    #                                                  mask=mask, 
-    #                                                  is_eval=True,
-    #                                                  client_id=None,  # No client ID needed for ASR testing
-    #                                                  region_mapping=None)  # TODO, this function is not been used
-    #             data, target = batch
-    #             data, target = data.to(self.params["run_device"]), target.to(self.params["run_device"])
-    #             output = model(data)
-    #             loss = criterion(output, target)
-    #             total_correct += (output.argmax(dim=1) == target).sum().item()
-    #             total_loss += loss.item()
-    #             total_num += data.size(0)
-    #     acc = total_correct / total_num
-    #     loss = total_loss / total_num
-    #     return acc, loss
 
 
     def test_global_model(self, 
-                          iteration,
-                          malicious_clients, 
-                          possible_region_ids=None, 
-                          client_region_mapping=None, 
-                          show_tsne=False):
-        """
-        Evaluate the global model: clean accuracy and ASR per region.
-        Returns a dictionary with clean accuracy/loss and ASR info.
-        """
-        results = {
-            "clean_acc": None,
-            "clean_loss": None,
-            "asr": {}
-        }
+                        iteration,
+                        malicious_clients, 
+                        possible_region_ids=None, 
+                        client_region_mapping=None, 
+                        show_tsne=False):
+        results = {"clean_acc": None, "clean_loss": None, "asr": {}}
 
-        # === Clean evaluation ===
-        acc, acc_loss = self.test_model_once(iteration, self.test_dataloader, is_poisoned=False)
-        self.acc_list.append(acc)
-        results["clean_acc"] = acc
-        results["clean_loss"] = acc_loss
+        device = torch.device(self.params.get("run_device", "cpu"))
+
+        # === Clean evaluation ONCE ===
+        clean = test_model_asr_acc(
+            model=self.global_model,
+            test_dataloader=self.test_dataloader,
+            device=device,
+            poisoned_batch_injection=poisoned_batch_injection  # <-- pass the function
+        )
+        self.acc_list.append(clean["clean_acc"])
+        results["clean_acc"]  = clean["clean_acc"]
+        results["clean_loss"] = clean["clean_loss"]
 
         logger.info(f"{'-'*55}")
         logger.info(f"| Test Global model in iteration {iteration}")
-        logger.info(f"| Loss {acc_loss:.4f}, Acc {acc * 100:.2f}%")
+        logger.info(f"| Loss {clean['clean_loss']:.4f}, Acc {clean['clean_acc'] * 100:.2f}%")
 
         logger.debug(f"[DEBUG] client_region_mapping = {client_region_mapping}")
         logger.debug(f"[DEBUG] trigger_set_by_region = {malicious_clients.trigger_set_by_region}")
@@ -290,14 +183,14 @@ class \
         if iteration >= self.params["poisoned_start_iteration"]:
             for region_id in possible_region_ids:
                 logger.debug(f"[DEBUG] === Evaluating Region {region_id} ===")
-                
+
                 if region_id not in malicious_clients.trigger_set_by_region or \
                 region_id not in malicious_clients.mask_set_by_region:
                     logger.warning(f"[ASR] Skipping Region {region_id} — no trigger/mask available.")
                     continue
 
                 trigger = malicious_clients.trigger_set_by_region[region_id]
-                mask = malicious_clients.mask_set_by_region[region_id]
+                mask    = malicious_clients.mask_set_by_region[region_id]
 
                 test_client_ids = [cid for cid, rid in client_region_mapping.items() if rid == region_id]
                 logger.debug(f"[DEBUG] Region {region_id} → test_client_ids = {test_client_ids}")
@@ -306,25 +199,21 @@ class \
                     logger.warning(f"[ASR] Skipping Region {region_id} — no clients mapped for testing.")
                     continue
 
-                test_client_id = test_client_ids[0]  # Pick any one client
+                test_client_id = test_client_ids[0]  # pick one
 
-                logger.debug(f"[DEBUG] Using test_client_id = {test_client_id} for Region {region_id}")
-
-                asr, loss = self.test_model_once(
-                    iteration=iteration,
+                m = test_model_asr_acc(
+                    model=self.global_model,
                     test_dataloader=self.test_dataloader,
-                    is_poisoned=True,
+                    device=device,
                     trigger=trigger,
                     mask=mask,
                     client_id=test_client_id,
-                    client_region_mapping=client_region_mapping
+                    region_id=region_id,
+                    poisoned_batch_injection=poisoned_batch_injection  # <-- pass the function
                 )
 
-                logger.info(f"| Region {region_id}: ASR {asr * 100:.2f}%, Loss {loss:.4f}")
-                results["asr"][region_id] = {
-                    "asr": asr,
-                    "loss": loss
-                }
+                logger.info(f"| Region {region_id}: ASR {m['asr'] * 100:.2f}%, Loss {m['asr_loss']:.4f}")
+                results["asr"][region_id] = {"asr": m["asr"], "loss": m["asr_loss"]}
 
         logger.info(f"{'-'*55}")
 
@@ -334,7 +223,6 @@ class \
                 if region_id in results["asr"]:
                     logger.info(f"ASR of region {region_id}: {results['asr'][region_id]['asr'] * 100:.2f}%")
 
-        # Optional: TSNE visualization
         if show_tsne and (iteration % 10 == 0 or (
                 self.params["malicious_train_algo"] == "Mirage"
                 and iteration % 3 == 0
@@ -342,6 +230,7 @@ class \
             self._visualize_tsne(iteration, malicious_clients)
 
         return results
+
 
 
 

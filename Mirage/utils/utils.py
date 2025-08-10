@@ -11,6 +11,9 @@ import numpy as np
 import torch
 import yaml
 from colorama import Fore
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 
 logger = logging.getLogger("logger")
 
@@ -430,4 +433,84 @@ def analyze_malicious_contribution(
     return {
         "malicious_weight_percent": malicious_weight_percent,
         "malicious_client_ratio": malicious_client_ratio
+    }
+
+
+
+
+def test_model_asr_acc(
+    model: torch.nn.Module,
+    test_dataloader: DataLoader,
+    device: torch.device,
+    *,
+    trigger=None,
+    mask=None,
+    client_id=None,
+    region_id=None,
+    loss_fn: nn.Module = None,
+    poisoned_batch_injection=None,   # pass your function in
+) -> dict:
+    """
+    Returns:
+        {
+          "clean_acc": float in [0,1],
+          "clean_loss": float,
+          "asr": float in [0,1] or None,
+          "asr_loss": float or None
+        }
+    """
+    if loss_fn is None:
+        loss_fn = nn.CrossEntropyLoss()
+
+    was_training = model.training
+    model.eval()
+
+    @torch.no_grad()
+    def _eval_once(poisoned: bool):
+        total, correct, loss_sum = 0, 0, 0.0
+        for batch in test_dataloader:
+            if poisoned:
+                assert poisoned_batch_injection is not None, "Provide poisoned_batch_injection for poisoned eval."
+                inputs, labels = poisoned_batch_injection(
+                    batch=batch,
+                    trigger=trigger,
+                    mask=mask,
+                    is_eval=True,
+                    client_id=client_id,
+                    region_id=region_id
+                )
+            else:
+                # Expect batch like (inputs, labels, *extras)
+                inputs, labels = batch[0], batch[1]
+
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            loss = loss_fn(outputs, labels)
+
+            pred = outputs.argmax(dim=1)
+            correct += (pred == labels).sum().item()
+            total += labels.size(0)
+            loss_sum += loss.item() * labels.size(0)
+
+        acc = correct / max(total, 1)
+        avg_loss = loss_sum / max(total, 1)
+        return acc, avg_loss
+
+    # Clean
+    clean_acc, clean_loss = _eval_once(poisoned=False)
+
+    # ASR (poisoned)
+    if trigger is not None and mask is not None:
+        asr_acc, asr_loss = _eval_once(poisoned=True)
+    else:
+        asr_acc, asr_loss = None, None
+
+    if was_training:
+        model.train()
+
+    return {
+        "clean_acc": clean_acc,
+        "clean_loss": clean_loss,
+        "asr": asr_acc,
+        "asr_loss": asr_loss,
     }
