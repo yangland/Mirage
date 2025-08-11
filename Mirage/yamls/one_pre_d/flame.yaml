@@ -107,7 +107,7 @@ defense_method: nodefense
 
 # Region Setting
 benign_sample_for_region: 4
-l2_scale_min: 0.9
-l2_scale_max: 5.0
-cos_scale_min: 1.0
+l2_scale_min: [0.5, 1.2]
+l2_scale_max: [2.0, 5.0]
+cos_scale_min: [0.5, 1.2]
 lambda_geo: 0.5

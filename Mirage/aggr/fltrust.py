@@ -179,7 +179,7 @@ def fltrust_aggr(server_sd, client_grad_dict, **kwargs):
     # === Step 4: Normalize weights to sum to 100.0
     total_weight = sum([v.item() for v in fltrust_weights.values()]) + 1e-10
     client_weights = {
-        cid: (fltrust_weights[cid].item() / total_weight) * 100.0
+        cid: (fltrust_weights[cid].item() / total_weight)
         for cid in fltrust_weights
     }
 

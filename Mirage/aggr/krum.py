@@ -73,7 +73,7 @@ def krum(model_sample_weight_dict, f, m):
 
     selected_clients_with_scores = sorted_krum_scores[:m]
     krum_clients = [i[0] for i in selected_clients_with_scores]
-    total_weights = n * 100
+    total_weights = n 
     ind_weight = total_weights / m
 
     client_weights = dict.fromkeys(model_sample_weight_dict.keys(), 0)

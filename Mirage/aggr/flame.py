@@ -32,7 +32,7 @@ def flame_aggr(server_model_state_dict, client_updates_dict, noise=0.001, exp_di
     server_grad = get_model_update(new_server_sd, server_model_state_dict)
     
     client_weights = {
-        cid: (100.0/len(flame_clients) if cid in flame_clients else 0.0)
+        cid: (1.0 / len(flame_clients) if cid in flame_clients else 0.0)
         for cid in client_updates_dict
     }
 

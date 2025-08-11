@@ -11,7 +11,7 @@ from participants.clients.BasicClient import BasicClient
 from utils.utils import poisoned_batch_injection, test_model_asr_acc
 from utils.regoin_utils import flatten_model, compute_geo_loss, project_model_into_region, \
     search_k_percent_to_fix_geometry, apply_delta_to_model, check_cos_constraint, scale_model_update_to_l2_boundary, \
-    project_update_inplace_, scale_update_to_l2_boundary_inplace_, _assign_flat_params_
+    project_update_inplace_, scale_update_to_l2_boundary_inplace_, _assign_flat_params_, polish_after_fix
 from utils.visualize import visualize, visualize_batch, visualize_tsne
 import torch.nn.functional as F
 
@@ -223,59 +223,91 @@ class MirageClient(BasicClient):
         return t.detach_()
 
 
-    def local_train_mirage(self, iteration, model, train_loader, client_id, test_loader=None, region_id=None):
-        '''
-        poisoning training process
+    def local_train_mirage(
+        self,
+        iteration,
+        model,
+        train_loader,
+        client_id,
+        test_loader=None,
+        region_id=None
+    ):
+        device = self.params["run_device"]
+        global_model = copy.deepcopy(model)
+        cache_model  = copy.deepcopy(model)
 
-        :param iteration:
-        :param model:
-        :param train_loader:
-        :param client_id:
-        :return:
-        '''
+        # --- FIX: robust loss_fn selection ---
+        loss_fn = getattr(self, "criterion", None)
+        if isinstance(loss_fn, nn.Module):
+            loss_fn = loss_fn.to(device)
+        elif callable(loss_fn):
+            # keep as-is (functions don't need .to(device))
+            pass
+        else:
+            loss_fn = nn.CrossEntropyLoss().to(device)
+        # -------------------------------------
 
-        cache_model = copy.deepcopy(model)
-        optimizer = torch.optim.SGD(cache_model.parameters(), lr=self.params['poisoned_lr'],
-                                    momentum=self.params['poisoned_momentum'],
-                                    weight_decay=self.params['poisoned_weight_decay'])
+        optimizer = torch.optim.SGD(
+            cache_model.parameters(),
+            lr=self.params['poisoned_lr'],
+            momentum=self.params['poisoned_momentum'],
+            weight_decay=self.params['poisoned_weight_decay']
+        )
 
-        trigger_ = self.search_trigger(model=cache_model, 
-                                       train_loader=train_loader, 
-                                       client_id=client_id,
-                                       region_id=region_id)
+        # Ensure region-level dicts exist (server ASR relies on these)
+        if not hasattr(self, "trigger_set_by_region"):
+            self.trigger_set_by_region = {}
+        if not hasattr(self, "mask_set_by_region"):
+            self.mask_set_by_region = {}
+
+        trigger_ = self.search_trigger(
+            model=cache_model,
+            train_loader=train_loader,
+            client_id=client_id,
+            region_id=region_id
+        )
         self.trigger_set[client_id] = trigger_
+        mask_ = self.mask_set[client_id]
+        self.trigger_set_by_region[region_id] = trigger_
+        self.mask_set_by_region[region_id]    = mask_
 
-        model.train()
         cache_model.train()
-        current_time = time.time()
-
         for epoch in range(self.params["poisoned_retrain_no_times"]):
+            for batch in train_loader:
+                inputs, labels = poisoned_batch_injection(
+                    batch=batch,
+                    trigger=trigger_,
+                    mask=mask_,
+                    is_eval=False,
+                    client_id=client_id,
+                    region_id=region_id
+                )
+                inputs, labels = inputs.to(device), labels.to(device)
 
-            cache_model.train()
-            total_loss = 0.
-            counter = 0.
-            for batch_idx, batch in enumerate(train_loader):
-                counter += 1
-                inputs, labels = poisoned_batch_injection(batch=batch, 
-                                                          trigger=self.trigger_set[client_id],
-                                                          mask=self.mask_set[client_id], 
-                                                          is_eval=False,
-                                                          client_id=client_id,
-                                                          region_id=region_id)
-
-                inputs, labels = inputs.to(self.params["run_device"]), labels.to(self.params["run_device"])
-                outputs = cache_model(inputs)
-                loss = self.criterion(outputs, labels)
-                total_loss += loss.item()
                 optimizer.zero_grad()
+                outputs = cache_model(inputs)
+                loss = loss_fn(outputs, labels)   # works for module or function
                 loss.backward()
                 optimizer.step()
-            cache_model.eval()
-            # acc, loss = self.local_test_once(cache_model, self.test_dataloader, is_poisoned=False, client_id=client_id)
-            # print(f"acc - {acc}, loss - {loss}")
-            # asr, loss = self.local_test_once(cache_model, self.test_dataloader, is_poisoned=True, client_id=client_id)
-            # print(f"asr - {asr}, loss - {loss}")
+
+
+        # Optional local eval
+        if test_loader is not None:
+            metrics = test_model_asr_acc(
+                model=cache_model,
+                test_dataloader=test_loader,
+                device=device,
+                trigger=trigger_,
+                mask=mask_,
+                client_id=client_id,
+                region_id=region_id,
+                poisoned_batch_injection=poisoned_batch_injection
+            )
+            logger.info(f"[MirageEval][Client {client_id}] clean_acc={metrics['clean_acc']*100:.2f}%, "
+                        f"ASR={metrics['asr']*100:.2f}%")
+
         return cache_model
+
 
 
     def local_train_region_constrained(
@@ -322,6 +354,7 @@ class MirageClient(BasicClient):
         delta_b = flatten_model(avg_benign_model) - flatten_model(global_model)
 
         # === Step 3: Training Loop ===
+        cache_model.train()
         for epoch in range(self.params["poisoned_retrain_no_times"]):
             for batch_idx, batch in enumerate(train_loader):
                 inputs, labels = poisoned_batch_injection(
@@ -338,37 +371,69 @@ class MirageClient(BasicClient):
                 outputs = cache_model(inputs)
                 base_loss = ce_loss(outputs, labels)
 
-                # print(f"[DEBUG] outputs stats: min={outputs.min().item()}, max={outputs.max().item()}, mean={outputs.mean().item()}")
-                # print(f"[DEBUG] labels range: {labels.min().item()} to {labels.max().item()}")
-                # print(f"[DEBUG] outputs contains NaN: {torch.isnan(outputs).any().item()}, Inf: {torch.isinf(outputs).any().item()}")
-
                 # Compute Δθ (current update)
                 delta_theta = flatten_model(cache_model) - flatten_model(global_model)
                 norm_theta = delta_theta.norm().item()
 
-                # === Option B: Only apply geo loss if Δθ is meaningfully non-zero ===
+                # === Direction + Magnitude losses (replaces geo_loss) ===
                 norm_theta_threshold = 1e-6
-                
-                if norm_theta > norm_theta_threshold:
-                    geo_loss = compute_geo_loss(
-                        delta_theta=delta_theta,
-                        delta_b=delta_b,
-                        update_cone_mode=update_cone_mode,
-                        threshold = norm_theta_threshold
-                    )
+                lambda_dir = self.params.get("lambda_geo", 0.5)   # reuse your knob
+                lambda_mag = self.params.get("lambda_mag", 0.1)   # NEW
+
+                # Build target direction u (handles align/oppose via sign)
+                if delta_b.norm().item() <= norm_theta_threshold or norm_theta <= norm_theta_threshold:
+                    dir_loss = (delta_theta * 0.0).sum()  # graph-connected zero
+                    u = None
                 else:
-                    # Skip geo loss if delta_theta is too small
-                    geo_loss = torch.tensor(0.0, device=delta_theta.device, requires_grad=True)
+                    target = delta_b if update_cone_mode == 1 else -delta_b
+                    u = target / (target.norm() + 1e-12)
+                    cos_sim = F.cosine_similarity(delta_theta.unsqueeze(0), u.unsqueeze(0), eps=1e-8).clamp(-1.0, 1.0)
+                    dir_loss = 1.0 - cos_sim  # smaller is better
+
+                # Magnitude loss toward the region radius (one radius everywhere)
+                mag_loss = (delta_theta.norm() - l2_radius).pow(2)
+
+                # Optional schedule: ramp λ_dir during epochs to avoid early tug-of-war
+                if self.params.get("use_dir_schedule", True):
+                    T = max(1, self.params["poisoned_retrain_no_times"])
+                    ramp = float(epoch + 1) / float(T)
+                else:
+                    ramp = 1.0
 
                 # Total loss
-                total_loss = base_loss + self.params.get("lambda_geo", 1.0) * geo_loss
+                total_loss = base_loss + (ramp * lambda_dir) * dir_loss + lambda_mag * mag_loss
+
 
                 if torch.isnan(total_loss):
                     print(f"[FATAL] Loss is NaN at iteration {iteration}, client {client_id}")
-                    print(f"    base_loss: {base_loss.item()}, geo_loss: {geo_loss.item()}, delta_theta_norm: {norm_theta:.2e}")
+                    print(f"    base_loss: {base_loss.item()}, dir_loss: {dir_loss.item()}, mag_loss: {mag_loss.item()}, delta_theta_norm: {norm_theta:.2e}")
                     return model  # Fail-safe
 
                 total_loss.backward()
+                
+                # === Optional gradient shaping toward the cone ===
+                beta = self.params.get("beta_grad_proj", None)  # e.g., 0.5; set None to disable
+                if (beta is not None) and (0.0 <= beta < 1.0) and (u is not None):
+                    g_list, shapes = [], []
+                    for p in cache_model.parameters():
+                        if p.grad is None: 
+                            continue
+                        g_list.append(p.grad.view(-1))
+                        shapes.append(p.grad.shape)
+                    if g_list:
+                        g = torch.cat(g_list)
+                        u_hat = u / (u.norm() + 1e-12)  # already unit, safe to re-norm
+
+                        g_par  = torch.dot(g, u_hat) * u_hat
+                        g_perp = g - g_par
+                        g_new  = g_par + beta * g_perp    # beta=0 -> along u only; beta=1 -> unchanged
+
+                        start = 0
+                        for p, shp in zip(cache_model.parameters(), shapes):
+                            n = p.numel()
+                            p.grad.copy_(g_new[start:start+n].view(shp))
+                            start += n
+
                 optimizer.step()
 
                 # === Project back into L2 region if exceed L2 radius ===
@@ -439,9 +504,30 @@ class MirageClient(BasicClient):
             if final_k is not None:
                 logger.info(f"[Fix] Client {client_id} — Constraint fixed with bottom {final_k}% replaced.")
                 cache_model = apply_delta_to_model(global_model, fixed_delta)
-
-                # ensure exact L2 radius without changing direction
-                scale_update_to_l2_boundary_inplace_(cache_model, global_model, l2_radius)
+                
+                # call the helper
+                ok_polish, cos_polish = polish_after_fix(
+                    cache_model=cache_model,
+                    global_model=global_model,
+                    train_loader=train_loader,
+                    client_id=client_id,
+                    region_id=region_id,
+                    trigger=trigger_,
+                    mask=mask_,
+                    device=device,
+                    ce_loss=ce_loss,
+                    delta_b=delta_b,
+                    update_cone_mode=update_cone_mode,
+                    l2_radius=l2_radius,
+                    cosine_threshold=cosine_threshold,
+                    poisoned_batch_injection=poisoned_batch_injection,
+                    project_update_inplace_=project_update_inplace_,
+                    scale_update_to_l2_boundary_inplace_=scale_update_to_l2_boundary_inplace_,
+                    params=self.params,
+                    logger=logger,
+                )
+                if not ok_polish:
+                    logger.warning(f"[Fix] Cosine check failed after scaling (cos_dist={cos_polish:.4f}).")
 
                 # --- TEST[3] AFTER binary replacement + rescale ---
                 if test_loader is not None:  # NEW: local eval
@@ -478,7 +564,7 @@ class MirageClient(BasicClient):
         client_id,
         test_loader=None,
         region_constraints=None,
-        region_id= None,
+        region_id=None,
         attack_variant="region constraint",  # or "Mirage org", "region constraint"
     ):
         """
@@ -491,7 +577,14 @@ class MirageClient(BasicClient):
 
         if attack_variant == "Mirage org":
             print(f"[DEBUG] Client {client_id} using 'Mirage org' attack.")
-            return self.local_train_mirage(iteration, model, train_loader, client_id, region_id=region_id)
+            return self.local_train_mirage(
+                iteration=iteration,
+                model=model,
+                train_loader=train_loader,
+                client_id=client_id,
+                test_loader=test_loader,
+                region_id=region_id
+            )
 
         elif attack_variant == "region constraint":
             print(f"[DEBUG] Client {client_id} using 'region constraint' attack.")
@@ -499,7 +592,7 @@ class MirageClient(BasicClient):
                 raise ValueError(f"[ERROR] No region constraint found for client {client_id}")
             return self.local_train_region_constrained(
                 iteration=iteration,
-                model=model,
+                model=model, # local model to train
                 train_loader=train_loader,
                 client_id=client_id,
                 constraint=region_constraints, # constraint for this client

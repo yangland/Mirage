@@ -14,7 +14,7 @@ from colorama import Fore
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-
+from utils.regoin_utils import flatten_model, check_cos_constraint
 logger = logging.getLogger("logger")
 
 # 创建一个全局变量static_args，用于保存命令行参数
@@ -225,22 +225,6 @@ def update_weight_accumulator(model, global_model, weight_accumulator, weight=1.
     return weight_accumulator, single_weight_accumulator
 
 
-# def assign_regions_to_malicious(selected_clients_list, malicious_clients_list,
-#                                 iteration, possible_region_ids=[1, 2, 3, 4], server=None):
-#     region_assignments = {}
-#     ids = possible_region_ids
-#     num_regions = len(ids)
-#     malicious_clients_this_round = [cid for cid in selected_clients_list if cid in malicious_clients_list]
-
-#     for client_id in malicious_clients_this_round:
-#         region_id = ids[server.region_index % num_regions]
-#         region_assignments[client_id] = region_id
-#         logger.info(f"[Round {iteration}] Assigned Client {client_id} to Region {region_id}")
-#         server.region_index += 1  # Increment after each assignment
-
-#     return region_assignments
-
-
 def assign_regions_to_malicious(
     selected_clients_list,
     malicious_clients_list,
@@ -428,7 +412,7 @@ def analyze_malicious_contribution(
         logger.info("[Malicious Contribution Analysis]")
         logger.info(f"  - Malicious clients count: {len(selected_malicious_clients)} / {len(selected_clients)}")
         logger.info(f"  - Malicious client ratio: {malicious_client_ratio:.2f}")
-        logger.info(f"  - Total malicious weight: {malicious_weight_percent:.2f}%")
+        logger.info(f"  - Total malicious weight: {malicious_weight_percent:.2f}")
 
     return {
         "malicious_weight_percent": malicious_weight_percent,
@@ -514,3 +498,4 @@ def test_model_asr_acc(
         "asr": asr_acc,
         "asr_loss": asr_loss,
     }
+

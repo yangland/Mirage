@@ -98,7 +98,7 @@ def fedavg(server_model_state_dict, client_updates_dict, average_bn_buffers=True
     
     # model weights for clients
     n_clients = len(client_updates_dict)
-    client_weights = {cid: 100.00 / n_clients for cid in client_updates_dict}
+    client_weights = {cid: 1.0 / n_clients for cid in client_updates_dict}
     return avg_model, client_weights
 
 

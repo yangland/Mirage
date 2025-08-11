@@ -4,6 +4,8 @@ import numpy as np
 from collections import defaultdict
 from copy import deepcopy
 import random
+import itertools
+import torch.nn as nn
 
 def flatten_model(model):
     return torch.cat([p.data.view(-1) for p in model.parameters()])
@@ -175,7 +177,7 @@ def search_k_percent_to_fix_geometry(delta_theta, delta_b, update_cone_mode, cos
         mid = (low + high) // 2
         k = mid / 100.0
 
-        modified_delta = replace_k_percent_with_target(
+        modified_delta = replace_k_percent_directional(
             delta_theta=delta_original,
             delta_b=delta_b,
             k_percent=k,
@@ -198,6 +200,47 @@ def search_k_percent_to_fix_geometry(delta_theta, delta_b, update_cone_mode, cos
             low = mid + 1
 
     return best_delta, best_k
+
+
+def replace_k_percent_directional(delta_theta, delta_b, k_percent, update_cone_mode):
+    # Target direction
+    target = delta_b if update_cone_mode == 1 else -delta_b
+    contrib = delta_theta * target  # per-dim contribution to alignment (bigger is better)
+
+    numel = delta_theta.numel()
+    k = int(round(k_percent * numel))
+    if k <= 0:
+        return delta_theta
+
+    modified = delta_theta.clone()
+
+    # 1) harmful dims: contrib < 0 (hurt alignment)
+    neg_idx = (contrib < 0).nonzero(as_tuple=True)[0]
+    neg_count = neg_idx.numel()
+
+    if neg_count >= k:
+        # among harmful, pick the k WORST by contrib; break ties by smaller |Δ|
+        neg_contrib = contrib[neg_idx]
+        neg_abs     = delta_theta[neg_idx].abs()
+        # combined score: first contrib ascending, then abs ascending
+        score = neg_contrib + 1e-12 * neg_abs  # tiny tie-break
+        take = torch.topk(score, k, largest=False).indices
+        pick_idx = neg_idx[take]
+    else:
+        # take all harmful, then fill remainder with smallest positive contributors
+        pick_list = [neg_idx] if neg_count > 0 else []
+        need = k - max(neg_count, 0)
+        pos_idx = (contrib >= 0).nonzero(as_tuple=True)[0]
+        if need > 0 and pos_idx.numel() > 0:
+            pos_contrib = contrib[pos_idx]
+            pos_abs     = delta_theta[pos_idx].abs()
+            score = pos_contrib + 1e-12 * pos_abs
+            take = torch.topk(score, need, largest=False).indices
+            pick_list.append(pos_idx[take])
+        pick_idx = torch.cat(pick_list) if pick_list else torch.tensor([], device=delta_theta.device, dtype=torch.long)
+
+    modified[pick_idx] = target[pick_idx]
+    return modified
 
 
 
@@ -390,6 +433,18 @@ def scale_update_to_l2_boundary_inplace_(model: torch.nn.Module,
 
 
 @torch.no_grad()
+def scale_update_by_factor_inplace_(model, center_model, factor: float):
+    # Reuse your boundary scaler under the hood
+    theta  = flatten_model(model)
+    center = flatten_model(center_model)
+    delta  = theta - center
+    norm   = delta.norm().item()
+    if norm < 1e-12:
+        return
+    scale_update_to_l2_boundary_inplace_(model, center_model, radius=factor * norm)
+
+
+@torch.no_grad()
 def _assign_flat_params_(model: torch.nn.Module, flat: torch.Tensor) -> None:
     """Copy a flat vector into model parameters without re-creating tensors."""
     offset = 0
@@ -501,3 +556,138 @@ def is_within_weight_cone(model, avg_benign_model, weight_cone_angle):
     delta = theta - theta_bar
     cos_dist = 1 - F.cosine_similarity(delta.unsqueeze(0), theta_bar.unsqueeze(0)).item()
     return cos_dist <= weight_cone_angle
+
+
+
+
+
+def polish_after_fix(
+    *,
+    cache_model: torch.nn.Module,
+    global_model: torch.nn.Module,
+    train_loader,
+    client_id: int,
+    region_id: int,
+    trigger,
+    mask,
+    device,
+    ce_loss: nn.Module,
+    delta_b: torch.Tensor,
+    update_cone_mode: int,
+    l2_radius: float,
+    cosine_threshold=None, 
+    poisoned_batch_injection,               # function
+    project_update_inplace_,                # function
+    scale_update_to_l2_boundary_inplace_,   # function
+    params: dict,
+    logger=None,
+):
+    """
+    Tiny post-fix polish: a few CE + (small) dir/mag-loss steps, projecting each step
+    to keep the update inside the L2 ball, then snap to the exact radius.
+
+    Mutates cache_model in-place. Returns (ok, cos_dist) where ok is a best-effort
+    geometry check using the same cosine threshold if provided via params.
+
+    Expected params keys (defaults in parentheses):
+        post_fix_polish_steps (1)
+        post_fix_polish_batches (1)
+        post_fix_polish_lr (poisoned_lr)
+        lambda_geo (0.5)        # reused as directional weight
+        lambda_mag (0.1)
+        beta_grad_proj_polish (0.8)   # None to disable
+        cosine_threshold (None)       # optional, for re-check
+    """
+    # --- read knobs
+    polish_steps   = int(params.get("post_fix_polish_steps", 1))
+    polish_batches = int(params.get("post_fix_polish_batches", 1))
+    pol_lr         = float(params.get("post_fix_polish_lr", params.get("poisoned_lr", 0.01)))
+    lambda_dir     = float(params.get("lambda_geo", 0.5))
+    lambda_mag     = float(params.get("lambda_mag", 0.1))
+    beta_polish    = params.get("beta_grad_proj_polish", 0.8)
+
+    if polish_steps <= 0 or polish_batches <= 0:
+        # still ensure exact radius
+        scale_update_to_l2_boundary_inplace_(cache_model, global_model, l2_radius)
+        return None, None
+
+    # fresh optimizer (cache_model may be a new module)
+    pol_opt = torch.optim.SGD(
+        cache_model.parameters(),
+        lr=pol_lr,
+        momentum=params.get('poisoned_momentum', 0.9),
+        weight_decay=params.get('poisoned_weight_decay', 0.0)
+    )
+    cache_model.train()
+
+    for _ in range(polish_steps):
+        for batch in itertools.islice(train_loader, polish_batches):
+            inputs, labels = poisoned_batch_injection(
+                batch=batch,
+                trigger=trigger,
+                mask=mask,
+                is_eval=False,
+                client_id=client_id,
+                region_id=region_id
+            )
+            inputs, labels = inputs.to(device), labels.to(device)
+
+            pol_opt.zero_grad()
+            outputs = cache_model(inputs)
+            base_loss = ce_loss(outputs, labels)
+
+            # rebuild delta and dir/mag losses
+            delta_theta = flatten_model(cache_model) - flatten_model(global_model)
+            if delta_b.norm().item() > 1e-6 and delta_theta.norm().item() > 1e-6:
+                target = delta_b if update_cone_mode == 1 else -delta_b
+                u = target / (target.norm() + 1e-12)
+                cos_sim = F.cosine_similarity(delta_theta.unsqueeze(0), u.unsqueeze(0), eps=1e-8).clamp(-1, 1)
+                dir_loss = 1.0 - cos_sim
+            else:
+                dir_loss = (delta_theta * 0.0).sum()
+
+            mag_loss = (delta_theta.norm() - l2_radius).pow(2)
+
+            total = base_loss + lambda_dir * dir_loss + 0.5 * lambda_mag * mag_loss
+            total.backward()
+
+            # optional grad shaping
+            if (beta_polish is not None) and (0.0 <= beta_polish < 1.0) and (delta_b.norm().item() > 1e-6):
+                g_list, shapes = [], []
+                for p in cache_model.parameters():
+                    if p.grad is None: continue
+                    g_list.append(p.grad.view(-1)); shapes.append(p.grad.shape)
+                if g_list:
+                    g = torch.cat(g_list)
+                    target = delta_b if update_cone_mode == 1 else -delta_b
+                    u_flat = target / (target.norm() + 1e-12)
+                    g_par  = torch.dot(g, u_flat) * u_flat
+                    g_perp = g - g_par
+                    g_new  = g_par + beta_polish * g_perp
+                    start = 0
+                    for p, shp in zip(cache_model.parameters(), shapes):
+                        n = p.numel()
+                        p.grad.copy_(g_new[start:start+n].view(shp))
+                        start += n
+
+            pol_opt.step()
+            # keep inside region each mini step
+            project_update_inplace_(cache_model, global_model, l2_radius)
+
+    # final snap to exact radius
+    scale_update_to_l2_boundary_inplace_(cache_model, global_model, l2_radius)
+
+    # optional cosine re-check here if threshold provided
+    ok, cos_d = None, None
+    if cosine_threshold is not None:
+        delta_theta = flatten_model(cache_model) - flatten_model(global_model)
+        ok, cos_d = check_cos_constraint(
+            delta_theta=delta_theta,
+            delta_b=delta_b,
+            update_cone_mode=update_cone_mode,
+            cosine_threshold=cosine_threshold
+        )
+        if logger is not None and not ok:
+            logger.warning(f"[Polish] Cosine check failed after polish (cos_dist={cos_d:.4f}).")
+
+    return ok, cos_d

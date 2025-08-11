@@ -28,7 +28,7 @@ def normbound_aggr(server_model_state_dict, clients_grad_dict, **kwargs):
     
     # model weights for clients
     n_clients = len(clients_grad_dict)
-    client_weights = {cid: 100.00 / n_clients for cid in clients_grad_dict}
+    client_weights = {cid: 1.0 / n_clients for cid in clients_grad_dict}
     return clipped_grad, client_weights
 
 
