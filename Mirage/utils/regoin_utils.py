@@ -593,7 +593,7 @@ def polish_after_fix(
         post_fix_polish_steps (1)
         post_fix_polish_batches (1)
         post_fix_polish_lr (poisoned_lr)
-        lambda_geo (0.5)        # reused as directional weight
+        lambda_dir (0.5)        # reused as directional weight
         lambda_mag (0.1)
         beta_grad_proj_polish (0.8)   # None to disable
         cosine_threshold (None)       # optional, for re-check
@@ -602,7 +602,7 @@ def polish_after_fix(
     polish_steps   = int(params.get("post_fix_polish_steps", 1))
     polish_batches = int(params.get("post_fix_polish_batches", 1))
     pol_lr         = float(params.get("post_fix_polish_lr", params.get("poisoned_lr", 0.01)))
-    lambda_dir     = float(params.get("lambda_geo", 0.5))
+    lambda_dir     = float(params.get("lambda_dir", 0.5))
     lambda_mag     = float(params.get("lambda_mag", 0.1))
     beta_polish    = params.get("beta_grad_proj_polish", 0.8)
 
@@ -648,7 +648,7 @@ def polish_after_fix(
 
             mag_loss = (delta_theta.norm() - l2_radius).pow(2)
 
-            total = base_loss + lambda_dir * dir_loss + 0.5 * lambda_mag * mag_loss
+            total = base_loss + lambda_dir * dir_loss + lambda_mag * mag_loss
             total.backward()
 
             # optional grad shaping

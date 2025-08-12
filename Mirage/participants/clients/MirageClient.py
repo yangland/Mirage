@@ -8,7 +8,7 @@ from torch import nn
 import numpy as np
 from tqdm import tqdm
 from participants.clients.BasicClient import BasicClient
-from utils.utils import poisoned_batch_injection, test_model_asr_acc
+from utils.utils import poisoned_batch_injection, test_model_asr_acc, _tiny_fp, eval_and_log_local
 from utils.regoin_utils import flatten_model, compute_geo_loss, project_model_into_region, \
     search_k_percent_to_fix_geometry, apply_delta_to_model, check_cos_constraint, scale_model_update_to_l2_boundary, \
     project_update_inplace_, scale_update_to_l2_boundary_inplace_, _assign_flat_params_, polish_after_fix
@@ -268,6 +268,9 @@ class MirageClient(BasicClient):
         )
         self.trigger_set[client_id] = trigger_
         mask_ = self.mask_set[client_id]
+        logger.info(f"[TriggerDbg][Client {client_id} R{region_id}] "
+            f"pre-train trig_fp={_tiny_fp(trigger_)}, mask_fp={_tiny_fp(mask_)}")
+
         self.trigger_set_by_region[region_id] = trigger_
         self.mask_set_by_region[region_id]    = mask_
 
@@ -339,14 +342,35 @@ class MirageClient(BasicClient):
                                 train_loader=train_loader, 
                                 client_id=client_id,
                                 region_id=region_id)
+        
+        # --- ensure per-client stores are dicts (convert lists on-the-fly) ---
+        if isinstance(self.trigger_set, list):
+            self.trigger_set = {i: t for i, t in enumerate(self.trigger_set) if t is not None}
+        if isinstance(self.mask_set, list):
+            self.mask_set = {i: m for i, m in enumerate(self.mask_set) if m is not None}
+
+        # save trigger/mask for this *client* and also for this *region*
         self.trigger_set[client_id] = trigger_
-        mask_ = self.mask_set[client_id]
+        mask_ = self.mask_set.get(client_id, self.mask_set.get(region_id, None))
+        if mask_ is None:
+            # if your mask is fixed (e.g., all-ones in a small patch), initialize it here once
+            mask_ = self.mask_set[client_id] = self.mask_set.get(client_id, torch.ones_like(trigger_))
+
+        # also index by region so server evaluation can fetch it directly
+        self.trigger_set_by_region[region_id] = trigger_
+        self.mask_set_by_region[region_id] = mask_        
+        
+        logger.info(f"[TriggerDbg][Client {client_id} R{region_id}] "
+            f"pre-train trig_fp={_tiny_fp(trigger_)}, mask_fp={_tiny_fp(mask_)}")
 
         ce_loss = nn.CrossEntropyLoss().to(device)
 
         # === Step 2: Extract region constraint info ===
         avg_benign_model = constraint.get("avg_benign_weight", None)
         l2_radius = constraint.get("l2_radius")
+        train_radius_scale  = self.params.get("train_radius_scale", 3.0)
+        train_radius = l2_radius * train_radius_scale
+        project_every = self.params.get("project_every", 3)
         update_cone_mode = constraint.get("update_cone_mode")
         logger.info(f"client: {client_id}, l2 radius: {l2_radius}, update cone mode: {update_cone_mode}")
 
@@ -377,7 +401,7 @@ class MirageClient(BasicClient):
 
                 # === Direction + Magnitude losses (replaces geo_loss) ===
                 norm_theta_threshold = 1e-6
-                lambda_dir = self.params.get("lambda_geo", 0.5)   # reuse your knob
+                lambda_dir = self.params.get("lambda_dir", 0.5)   # reuse your knob
                 lambda_mag = self.params.get("lambda_mag", 0.1)   # NEW
 
                 # Build target direction u (handles align/oppose via sign)
@@ -437,44 +461,42 @@ class MirageClient(BasicClient):
                 optimizer.step()
 
                 # === Project back into L2 region if exceed L2 radius ===
-                project_update_inplace_(cache_model, global_model, l2_radius)
+                if project_every and ((batch_idx + 1) % project_every == 0):
+                    project_update_inplace_(cache_model, global_model, train_radius)
 
         # --- TEST[1] BEFORE final L2 scaling ---
-        if test_loader is not None:  # NEW: local eval
-            m_pre = test_model_asr_acc(
-                model=cache_model,
-                test_dataloader=test_loader,
-                device=device,
-                trigger=trigger_,
-                mask=mask_,
-                client_id=client_id,
-                region_id=region_id,
-                poisoned_batch_injection=poisoned_batch_injection
-            )
-            logger.info(f"[LocalEval][Client {client_id}] pre-scale: "
-                        f"clean_acc={m_pre['clean_acc']*100:.2f}%, "
-                        f"ASR={m_pre['asr']*100:.2f}%")
+        m_pre = eval_and_log_local(
+            model=cache_model,
+            test_loader=test_loader,
+            device=device,
+            client_id=client_id,
+            region_id=region_id,
+            trigger=trigger_,
+            mask=mask_,
+            poisoned_batch_injection=poisoned_batch_injection,
+            logger=logger,
+            tag="pre-scale",
+            show_trigger_dbg=True,   # show the TriggerDbg line once here
+        )
 
         # After poisoned training loop, make sure the L2 norm as required
         scale_update_to_l2_boundary_inplace_(cache_model, global_model, l2_radius)
 
 
         # --- TEST[2] AFTER final L2 scaling ---
-        if test_loader is not None:  # NEW: local eval
-            m_post = test_model_asr_acc(
-                model=cache_model,
-                test_dataloader=test_loader,
-                device=device,
-                trigger=trigger_,
-                mask=mask_,
-                client_id=client_id,
-                region_id=region_id,
-                poisoned_batch_injection=poisoned_batch_injection
-            )
-            logger.info(f"[LocalEval][Client {client_id}] post-scale: "
-                        f"clean_acc={m_post['clean_acc']*100:.2f}%, "
-                        f"ASR={m_post['asr']*100:.2f}%")
-
+        m_post = eval_and_log_local(
+            model=cache_model,
+            test_loader=test_loader,
+            device=device,
+            client_id=client_id,
+            region_id=region_id,
+            trigger=trigger_,
+            mask=mask_,
+            poisoned_batch_injection=poisoned_batch_injection,
+            logger=logger,
+            tag="pre-scale",
+            show_trigger_dbg=True,   # show the TriggerDbg line once here
+        )
 
         # === Step 5: Validate Geometry ===
         delta_theta = flatten_model(cache_model) - flatten_model(global_model)
@@ -505,7 +527,6 @@ class MirageClient(BasicClient):
                 logger.info(f"[Fix] Client {client_id} — Constraint fixed with bottom {final_k}% replaced.")
                 cache_model = apply_delta_to_model(global_model, fixed_delta)
                 
-                # call the helper
                 ok_polish, cos_polish = polish_after_fix(
                     cache_model=cache_model,
                     global_model=global_model,
@@ -530,20 +551,19 @@ class MirageClient(BasicClient):
                     logger.warning(f"[Fix] Cosine check failed after scaling (cos_dist={cos_polish:.4f}).")
 
                 # --- TEST[3] AFTER binary replacement + rescale ---
-                if test_loader is not None:  # NEW: local eval
-                    m_fix = test_model_asr_acc(
-                        model=cache_model,
-                        test_dataloader=test_loader,
-                        device=device,
-                        trigger=trigger_,
-                        mask=mask_,
-                        client_id=client_id,
-                        region_id=region_id,
-                        poisoned_batch_injection=poisoned_batch_injection
-                    )
-                    logger.info(f"[LocalEval][Client {client_id}] post-binary-fix: "
-                                f"clean_acc={m_fix['clean_acc']*100:.2f}%, "
-                                f"ASR={m_fix['asr']*100:.2f}%")
+                m_fix = eval_and_log_local(
+                    model=cache_model,
+                    test_loader=test_loader,
+                    device=device,
+                    client_id=client_id,
+                    region_id=region_id,
+                    trigger=trigger_,
+                    mask=mask_,
+                    poisoned_batch_injection=poisoned_batch_injection,
+                    logger=logger,
+                    tag="post-binary-fix",
+                    show_trigger_dbg=False,
+                )
 
                 # optional: re-check
                 delta_theta = flatten_model(cache_model) - flatten_model(global_model)

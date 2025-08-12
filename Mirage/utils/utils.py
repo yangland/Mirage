@@ -22,6 +22,13 @@ global static_args
 static_args = None
 
 
+def _tiny_fp(x, n=8):
+    try:
+        return float(x.reshape(-1)[:n].abs().sum().item())
+    except Exception:
+        return float('nan')
+
+
 def args_update(args=None, mkdir=True):
     with open(f"./{args.params}", "r", encoding="utf-8") as f:
         new_args = yaml.safe_load(f)
@@ -421,28 +428,21 @@ def analyze_malicious_contribution(
 
 
 
-
 def test_model_asr_acc(
-    model: torch.nn.Module,
-    test_dataloader: DataLoader,
-    device: torch.device,
+    model,
+    test_dataloader,
+    device,
     *,
     trigger=None,
     mask=None,
     client_id=None,
     region_id=None,
-    loss_fn: nn.Module = None,
-    poisoned_batch_injection=None,   # pass your function in
+    loss_fn=None,
+    poisoned_batch_injection=None,
+    debug_poison_log: bool = False,   # <— new
+    debug_poison_every: int = 20, # <— new
+    logger=None                       # <— new (optional)
 ) -> dict:
-    """
-    Returns:
-        {
-          "clean_acc": float in [0,1],
-          "clean_loss": float,
-          "asr": float in [0,1] or None,
-          "asr_loss": float or None
-        }
-    """
     if loss_fn is None:
         loss_fn = nn.CrossEntropyLoss()
 
@@ -452,50 +452,103 @@ def test_model_asr_acc(
     @torch.no_grad()
     def _eval_once(poisoned: bool):
         total, correct, loss_sum = 0, 0, 0.0
-        for batch in test_dataloader:
+        for bidx, batch in enumerate(test_dataloader):
             if poisoned:
-                assert poisoned_batch_injection is not None, "Provide poisoned_batch_injection for poisoned eval."
+                assert poisoned_batch_injection is not None
                 inputs, labels = poisoned_batch_injection(
-                    batch=batch,
-                    trigger=trigger,
-                    mask=mask,
-                    is_eval=True,
-                    client_id=client_id,
-                    region_id=region_id
+                    batch=batch, trigger=trigger, mask=mask,
+                    is_eval=True, client_id=client_id, region_id=region_id
                 )
+                if debug_poison_log and logger and (bidx % max(1, debug_poison_every) == 0):
+                    # lightweight fingerprints
+                    flip_rate = float((labels != batch[1].to(labels.device)).float().mean().item())
+                    mask_fp   = float(mask.float().sum().item()) if mask is not None else -1.0
+                    trig_fp   = float(trigger.float().norm().item()) if trigger is not None else -1.0
+                    logger.info(f"[ASR-Eval] region={region_id}, client={client_id}, "
+                                f"flip_rate={flip_rate:.3f}, mask_fp={mask_fp:.3f}, trig_fp={trig_fp:.3f}")
             else:
-                # Expect batch like (inputs, labels, *extras)
                 inputs, labels = batch[0], batch[1]
 
             inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
-            loss = loss_fn(outputs, labels)
+            loss    = loss_fn(outputs, labels)
 
             pred = outputs.argmax(dim=1)
-            correct += (pred == labels).sum().item()
-            total += labels.size(0)
+            correct  += (pred == labels).sum().item()
+            total    += labels.size(0)
             loss_sum += loss.item() * labels.size(0)
 
         acc = correct / max(total, 1)
         avg_loss = loss_sum / max(total, 1)
         return acc, avg_loss
 
-    # Clean
     clean_acc, clean_loss = _eval_once(poisoned=False)
-
-    # ASR (poisoned)
+    asr_acc, asr_loss = (None, None)
     if trigger is not None and mask is not None:
         asr_acc, asr_loss = _eval_once(poisoned=True)
-    else:
-        asr_acc, asr_loss = None, None
 
     if was_training:
         model.train()
 
-    return {
-        "clean_acc": clean_acc,
-        "clean_loss": clean_loss,
-        "asr": asr_acc,
-        "asr_loss": asr_loss,
-    }
+    return {"clean_acc": clean_acc, "clean_loss": clean_loss, "asr": asr_acc, "asr_loss": asr_loss}
 
+
+
+def eval_and_log_local(
+    *,
+    model,
+    test_loader,
+    device,
+    client_id: int,
+    region_id: int,
+    trigger,
+    mask,
+    poisoned_batch_injection,
+    logger,
+    tag: str = "eval",
+    show_trigger_dbg: bool = False,
+    **test_kwargs,  # passed through to test_model_asr_acc if you add extras later
+):
+    """
+    Run test_model_asr_acc and log a compact line.
+    If show_trigger_dbg=True, also print the trigger/mask fingerprints once for this call.
+    """
+    # — optional "TriggerDbg" line —
+    if show_trigger_dbg:
+        try:
+            trig_fp = _tiny_fp(trigger)
+            mask_fp = _tiny_fp(mask)
+        except NameError:
+            # Fallback if _tiny_fp isn't in scope
+            def _fp_trig(t):
+                if t is None: return -1.0
+                return float(t.float().norm().item())
+            def _fp_mask(m):
+                if m is None: return -1.0
+                return float(m.float().sum().item())
+            trig_fp = _fp_trig(trigger)
+            mask_fp = _fp_mask(mask)
+        logger.info(
+            f"[TriggerDbg][Client {client_id} R{region_id}] "
+            f"eval trig_fp={trig_fp}, mask_fp={mask_fp}"
+        )
+
+    # — run eval —
+    metrics = test_model_asr_acc(
+        model=model,
+        test_dataloader=test_loader,
+        device=device,
+        trigger=trigger,
+        mask=mask,
+        client_id=client_id,
+        region_id=region_id,
+        poisoned_batch_injection=poisoned_batch_injection,
+        **test_kwargs,
+    )
+
+    asr_pct = (metrics["asr"] * 100.0) if (metrics.get("asr") is not None) else float("nan")
+    logger.info(
+        f"[LocalEval][Client {client_id}] {tag}: "
+        f"clean_acc={metrics['clean_acc']*100:.2f}%, ASR={asr_pct:.2f}%"
+    )
+    return metrics

@@ -16,7 +16,10 @@ def coordinate_wise_median(server_model_state_dict, client_updates_dict, **kwarg
             med = t.float().median(0)[0]
             new_weights[name] = med
     
-    return new_weights, None
+    # model weights for clients
+    n_clients = len(client_updates_dict)
+    client_weights = {cid: 1.0 / n_clients for cid in client_updates_dict}
+    return new_weights, client_weights
 
 
 # def fedavg(server_model_state_dict, client_updates_dict, average_bn_buffers=True, **kwargs):
@@ -126,7 +129,10 @@ def trimmed_mean(server_model_state_dict, client_updates_dict, m, **kwargs):
             mean_m_closet = torch.mean(m_closet.float(), 0)
             new_weights[layer_name] = mean_m_closet.view(size)
 
-    return new_weights, None
+        # model weights for clients
+    n_clients = len(client_updates_dict)
+    client_weights = {cid: 1.0 / n_clients for cid in client_updates_dict}
+    return new_weights, client_weights
 
 
 def get_layer_weight(model, name_list):

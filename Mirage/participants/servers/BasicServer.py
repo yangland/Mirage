@@ -10,7 +10,7 @@ from torch.nn import functional as F
 
 import models.resnet
 import models.vgg
-from utils.utils import poisoned_batch_injection, test_model_asr_acc
+from utils.utils import poisoned_batch_injection, test_model_asr_acc, _tiny_fp
 from utils.visualize import visualize, visualize_batch, visualize_tsne
 from aggr import aggregate_global_model
 from aggr.fltrust import create_fl_trust_root_dataset
@@ -191,6 +191,8 @@ class \
 
                 trigger = malicious_clients.trigger_set_by_region[region_id]
                 mask    = malicious_clients.mask_set_by_region[region_id]
+                logger.info(f"[TriggerDbg][GlobalEval] R{region_id} trig_fp={_tiny_fp(trigger)}, mask_fp={_tiny_fp(mask)}")
+
 
                 test_client_ids = [cid for cid, rid in client_region_mapping.items() if rid == region_id]
                 logger.debug(f"[DEBUG] Region {region_id} → test_client_ids = {test_client_ids}")

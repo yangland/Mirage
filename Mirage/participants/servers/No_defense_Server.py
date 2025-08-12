@@ -6,7 +6,8 @@ import itertools
 from tqdm import tqdm
 
 from participants.servers.BasicServer import BasicServer
-from utils.utils import model_dist_norm_var, update_weight_accumulator, model_weight_diff, update_weight_accumulator_direct
+from utils.utils import model_dist_norm_var, update_weight_accumulator, model_weight_diff, \
+    update_weight_accumulator_direct, _tiny_fp
 from utils.regoin_utils import compute_benign_statistics, build_region_constraints
 import random
 
@@ -204,7 +205,30 @@ class No_defense_Server(BasicServer):
         for client_ind, client_id in enumerate(selected_clients_list):
             logger.info(f"Client {client_id} update norm: {update_norm_by_client[client_id]}")
 
-        # === Step X: Aggregate trigger/mask per region ===
+        # === Step X old: Aggregate trigger/mask per region ===
+        # for client_id in selected_clients_list:
+        #     if client_id not in malicious_clients_list:
+        #         continue
+
+        #     region_id = client_region_mapping.get(client_id)
+        #     if region_id is None:
+        #         continue
+
+        #     if region_id not in malicious_client.trigger_set_by_region:
+        #         canonical_client = canonical_client_for_region[region_id]
+        #         malicious_client.trigger_set_by_region[region_id] = malicious_client.trigger_set[canonical_client]
+        #         malicious_client.mask_set_by_region[region_id] = malicious_client.mask_set[canonical_client]
+            
+        # === Step X: Aggregate trigger/mask per region (defensive & list/dict aware) ===
+        def _get_from_store(store, key):
+            if isinstance(store, dict):
+                return store.get(key, None)
+            if isinstance(store, list):
+                if isinstance(key, int) and 0 <= key < len(store):
+                    return store[key]
+                return None
+            return None  # unknown type
+
         for client_id in selected_clients_list:
             if client_id not in malicious_clients_list:
                 continue
@@ -213,10 +237,36 @@ class No_defense_Server(BasicServer):
             if region_id is None:
                 continue
 
-            if region_id not in malicious_client.trigger_set_by_region:
-                canonical_client = canonical_client_for_region[region_id]
-                malicious_client.trigger_set_by_region[region_id] = malicious_client.trigger_set[canonical_client]
-                malicious_client.mask_set_by_region[region_id] = malicious_client.mask_set[canonical_client]
+            # Skip if already set for this region this round
+            if (region_id in malicious_client.trigger_set_by_region and
+                region_id in malicious_client.mask_set_by_region):
+                continue
+
+            # Prefer the canonical client's trigger/mask for the region
+            canonical_client = canonical_client_for_region.get(region_id, None)
+
+            trig_src = _get_from_store(getattr(malicious_client, "trigger_set", {}), canonical_client)
+            mask_src = _get_from_store(getattr(malicious_client, "mask_set", {}), canonical_client)
+
+            # Fallback to any malicious client from this round if canonical not ready
+            if trig_src is None or mask_src is None:
+                for m_id in malicious_clients_list:
+                    trig_src = _get_from_store(malicious_client.trigger_set, m_id)
+                    mask_src = _get_from_store(malicious_client.mask_set, m_id)
+                    if trig_src is not None and mask_src is not None:
+                        logger.warning(f"[TriggerSet] Using fallback trigger/mask from client {m_id} for region {region_id}.")
+                        break
+
+            if trig_src is None or mask_src is None:
+                logger.warning(f"[TriggerSet] No trigger/mask available for region {region_id} this round.")
+                continue
+
+            malicious_client.trigger_set_by_region[region_id] = trig_src
+            malicious_client.mask_set_by_region[region_id]    = mask_src
+
+            # tiny fingerprints so you can match later in global eval
+            logger.info(f"[TriggerSet] R{region_id} trig_fp={_tiny_fp(trig_src):.3f}, mask_fp={_tiny_fp(mask_src):.3f}")
+        
 
         return (
             weight_accumulator,

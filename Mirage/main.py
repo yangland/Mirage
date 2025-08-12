@@ -17,7 +17,9 @@ from participants.clients.MalicilousClient import MaliciousClient
 from participants.clients.MirageClient import MirageClient
 from participants.servers.No_defense_Server import No_defense_Server
 
-from utils.utils import args_update, assign_regions_to_malicious, virtual_mali_id_assignment, get_regions_to_attack, analyze_malicious_contribution
+from utils.utils import args_update, assign_regions_to_malicious, poisoned_batch_injection,\
+    virtual_mali_id_assignment, get_regions_to_attack, analyze_malicious_contribution, test_model_asr_acc,\
+    _tiny_fp
 from utils.visualize import visualize_batch
 from utils.backdoor_survival_tracker import BackdoorSurvivalTracker, log_backdoor_tracking_csv
 
@@ -125,6 +127,7 @@ if __name__ == "__main__":
         region_ids=possible_region_ids_list,
         filename=f"backdoor_tracking_log_{params_loaded['defense_method']}.csv"
     )
+    
 
     for iteration in range(server.params["start_iteration"], server.params["end_iteration"]):
         logger.info(f"====================== Current Round: {iteration} ======================")
@@ -223,6 +226,46 @@ if __name__ == "__main__":
             for region_id, client_id in region_to_test_client.items()
         }
         logger.info(f"Updated reverse mapping: {reverse_client_region_mapping}")
+
+
+        # --- DEBUG-PROBE: evaluate global model with exactly the current round’s region triggers ---
+        # try:
+        #     attacked_regions_this_round = sorted(set(client_region_mapping.values()))
+        #     for r in attacked_regions_this_round:
+        #         if r not in malicious_client.trigger_set_by_region or r not in malicious_client.mask_set_by_region:
+        #             logger.warning(f"[DEBUG-Probe] Region {r} has no trigger/mask in this round; skipping probe.")
+        #             continue
+
+        #         trig = malicious_client.trigger_set_by_region[r]
+        #         msk  = malicious_client.mask_set_by_region[r]
+
+        #         # Prefer a real client id that was mapped to this region this round; fallback to canonical
+        #         probe_client_id = None
+        #         for cid, rid in client_region_mapping.items():
+        #             if rid == r:
+        #                 probe_client_id = cid
+        #                 break
+        #         if probe_client_id is None:
+        #             probe_client_id = canonical_client_for_region.get(r, None)
+
+        #         logger.info(f"[DEBUG-Probe] Iter {iteration} R{r}: trig_fp={_tiny_fp(trig)}, mask_fp={_tiny_fp(msk)}, "
+        #                     f"probe_client_id={probe_client_id}")
+
+        #         probe = test_model_asr_acc(
+        #             model=server.global_model,
+        #             test_dataloader=server.test_dataloader,
+        #             device=torch.device(server.params.get("run_device", "cpu")),
+        #             trigger=trig,
+        #             mask=msk,
+        #             client_id=probe_client_id,
+        #             region_id=r,
+        #             poisoned_batch_injection=poisoned_batch_injection  # ensure it's imported in this scope
+        #         )
+        #         logger.info(f"[DEBUG-Probe] Iter {iteration} R{r}: ASR={probe['asr']*100:.2f}% (pre formal test)")
+        # except Exception as e:
+        #     logger.exception(f"[DEBUG-Probe] Failed: {e}")
+
+
 
         # === Step 6: Evaluate global model
         global_eval_results = server.test_global_model(
