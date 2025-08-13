@@ -494,7 +494,7 @@ class MirageClient(BasicClient):
             mask=mask_,
             poisoned_batch_injection=poisoned_batch_injection,
             logger=logger,
-            tag="pre-scale",
+            tag="post-scale",
             show_trigger_dbg=True,   # show the TriggerDbg line once here
         )
 
@@ -512,10 +512,10 @@ class MirageClient(BasicClient):
         # === Step 6: Binary Search for Value Replacement if Invalid ===
         if not is_valid:
             logger.warning(
-                            f"[Iteration {iteration}] Client {client_id} violates geo constraint. "
-                            f"cos_dist = {crafted_cos_dist:.4f}, threshold = {cosine_threshold:.4f}. "
-                            "Starting binary search for k% replacement."
-                            )
+                f"[Iteration {iteration}] Client {client_id} violates geo constraint. "
+                f"cos_dist = {crafted_cos_dist:.4f}, threshold = {cosine_threshold:.4f}. "
+                "Starting binary search for k% replacement."
+            )
             fixed_delta, final_k = search_k_percent_to_fix_geometry(
                 delta_theta=delta_theta,
                 delta_b=delta_b,
@@ -525,33 +525,12 @@ class MirageClient(BasicClient):
 
             if final_k is not None:
                 logger.info(f"[Fix] Client {client_id} — Constraint fixed with bottom {final_k}% replaced.")
+                # 1) Apply replacement and snap to exact radius
                 cache_model = apply_delta_to_model(global_model, fixed_delta)
-                
-                ok_polish, cos_polish = polish_after_fix(
-                    cache_model=cache_model,
-                    global_model=global_model,
-                    train_loader=train_loader,
-                    client_id=client_id,
-                    region_id=region_id,
-                    trigger=trigger_,
-                    mask=mask_,
-                    device=device,
-                    ce_loss=ce_loss,
-                    delta_b=delta_b,
-                    update_cone_mode=update_cone_mode,
-                    l2_radius=l2_radius,
-                    cosine_threshold=cosine_threshold,
-                    poisoned_batch_injection=poisoned_batch_injection,
-                    project_update_inplace_=project_update_inplace_,
-                    scale_update_to_l2_boundary_inplace_=scale_update_to_l2_boundary_inplace_,
-                    params=self.params,
-                    logger=logger,
-                )
-                if not ok_polish:
-                    logger.warning(f"[Fix] Cosine check failed after scaling (cos_dist={cos_polish:.4f}).")
+                scale_update_to_l2_boundary_inplace_(cache_model, global_model, l2_radius)
 
-                # --- TEST[3] AFTER binary replacement + rescale ---
-                m_fix = eval_and_log_local(
+                # 2) Evaluate right after replacement (no polish yet)
+                m_repl = eval_and_log_local(
                     model=cache_model,
                     test_loader=test_loader,
                     device=device,
@@ -561,15 +540,89 @@ class MirageClient(BasicClient):
                     mask=mask_,
                     poisoned_batch_injection=poisoned_batch_injection,
                     logger=logger,
-                    tag="post-binary-fix",
+                    tag="post-replace",
                     show_trigger_dbg=False,
                 )
 
-                # optional: re-check
+                # 3) Decide if polish is even needed based on ASR drop from the post-scale baseline
+                #    (absolute drop in points; default 0.10 = 10 percentage points)
+                asr_drop_thresh = float(self.params.get("polish_asr_drop_thresh", 0.10))
+                post_scale_asr = float(m_post["asr"] if m_post["asr"] is not None else 0.0)
+                post_repl_asr  = float(m_repl["asr"] if m_repl["asr"] is not None else 0.0)
+                asr_drop = max(0.0, post_scale_asr - post_repl_asr)
+
+                logger.info(
+                    f"[Fix] ASR baseline (post-scale)={post_scale_asr*100:.2f}%, "
+                    f"post-replace ASR={post_repl_asr*100:.2f}% "
+                    f"(drop={asr_drop*100:.2f}%, thresh={asr_drop_thresh*100:.1f}%)."
+                )
+
+                run_polish = asr_drop >= asr_drop_thresh
+
+                if run_polish:
+                    # 4) Try polish, but never leave the final model violating cosine constraint.
+                    #    Keep a copy to revert if polish exceeds the budget.
+                    _pre_polish_sd = {k: v.detach().clone() for k, v in cache_model.state_dict().items()}
+
+                    ok_polish, cos_polish = polish_after_fix(
+                        cache_model=cache_model,
+                        global_model=global_model,
+                        train_loader=train_loader,
+                        client_id=client_id,
+                        region_id=region_id,
+                        trigger=trigger_,
+                        mask=mask_,
+                        device=device,
+                        ce_loss=ce_loss,
+                        delta_b=delta_b,
+                        update_cone_mode=update_cone_mode,
+                        l2_radius=l2_radius,
+                        cosine_threshold=cosine_threshold,
+                        poisoned_batch_injection=poisoned_batch_injection,
+                        project_update_inplace_=project_update_inplace_,
+                        scale_update_to_l2_boundary_inplace_=scale_update_to_l2_boundary_inplace_,
+                        params=self.params,
+                        logger=logger,
+                    )
+
+                    if not ok_polish:
+                        # Revert to pre-polish weights to respect geometry budget
+                        logger.warning(
+                            f"[Polish] Reverting polish because cosine exceeded threshold "
+                            f"(cos_dist={cos_polish:.4f} > {cosine_threshold:.4f})."
+                        )
+                        cache_model.load_state_dict(_pre_polish_sd)
+                        # (already on-radius from before polishing)
+
+                    # 5) Evaluate after (successful-or-reverted) polish
+                    m_fix = eval_and_log_local(
+                        model=cache_model,
+                        test_loader=test_loader,
+                        device=device,
+                        client_id=client_id,
+                        region_id=region_id,
+                        trigger=trigger_,
+                        mask=mask_,
+                        poisoned_batch_injection=poisoned_batch_injection,
+                        logger=logger,
+                        tag="post-binary-fix",
+                        show_trigger_dbg=False,
+                    )
+                else:
+                    logger.info(
+                        "[Polish] Skipped: ASR did not drop enough after replacement "
+                        f"(drop={asr_drop*100:.2f}% < {asr_drop_thresh*100:.1f}%)."
+                    )
+                    m_fix = m_repl  # carry forward post-replace metrics as the final
+
+                # 6) Final geometry check (informational)
                 delta_theta = flatten_model(cache_model) - flatten_model(global_model)
                 ok, cos_d = check_cos_constraint(delta_theta, delta_b, update_cone_mode, cosine_threshold)
                 if not ok:
-                    logger.warning(f"[Fix] Cosine check failed after scaling (cos_dist={cos_d:.4f}).")
+                    logger.warning(
+                        f"[Fix] Cosine check failed at end (cos_dist={cos_d:.4f}) "
+                        f"vs cos threshold {cosine_threshold:.4f}."
+                    )
             else:
                 logger.warning(f"[Fix] Client {client_id} — Could NOT fix constraint with ≤100% flipping.")
 

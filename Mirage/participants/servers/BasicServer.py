@@ -155,15 +155,17 @@ class \
                         malicious_clients, 
                         possible_region_ids=None, 
                         client_region_mapping=None, 
+                        test_loader=None,     # NEW: overrides server.test_dataloader
+                        view="server",        # "server" | "malicious"
                         show_tsne=False):
         results = {"clean_acc": None, "clean_loss": None, "asr": {}}
-
         device = torch.device(self.params.get("run_device", "cpu"))
+        test_loader = test_loader if test_loader is not None else self.test_dataloader
 
         # === Clean evaluation ONCE ===
         clean = test_model_asr_acc(
             model=self.global_model,
-            test_dataloader=self.test_dataloader,
+            test_dataloader=test_loader,
             device=device,
             poisoned_batch_injection=poisoned_batch_injection  # <-- pass the function
         )
@@ -173,7 +175,7 @@ class \
 
         logger.info(f"{'-'*55}")
         logger.info(f"| Test Global model in iteration {iteration}")
-        logger.info(f"| Loss {clean['clean_loss']:.4f}, Acc {clean['clean_acc'] * 100:.2f}%")
+        logger.info(f"View: {view}| Loss {clean['clean_loss']:.4f}, Acc {clean['clean_acc'] * 100:.2f}%")
 
         logger.debug(f"[DEBUG] client_region_mapping = {client_region_mapping}")
         logger.debug(f"[DEBUG] trigger_set_by_region = {malicious_clients.trigger_set_by_region}")
@@ -205,7 +207,7 @@ class \
 
                 m = test_model_asr_acc(
                     model=self.global_model,
-                    test_dataloader=self.test_dataloader,
+                    test_dataloader=test_loader,
                     device=device,
                     trigger=trigger,
                     mask=mask,
@@ -214,7 +216,7 @@ class \
                     poisoned_batch_injection=poisoned_batch_injection  # <-- pass the function
                 )
 
-                logger.info(f"| Region {region_id}: ASR {m['asr'] * 100:.2f}%, Loss {m['asr_loss']:.4f}")
+                logger.info(f"View: {view}| Region {region_id}: ASR {m['asr'] * 100:.2f}%, Loss {m['asr_loss']:.4f}")
                 results["asr"][region_id] = {"asr": m["asr"], "loss": m["asr_loss"]}
 
         logger.info(f"{'-'*55}")

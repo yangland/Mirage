@@ -552,3 +552,12 @@ def eval_and_log_local(
         f"clean_acc={metrics['clean_acc']*100:.2f}%, ASR={asr_pct:.2f}%"
     )
     return metrics
+
+def build_pooled_malicious_test_loader(malicious_client, malicious_ids, batch_size):
+    # Gather each malicious client’s *test* subset (same transforms as server test).
+    # If you only have train splits, you can subsample/holdout consistently.
+    datasets = [malicious_client.test_dataloader[cid].dataset for cid in malicious_ids]
+    pooled = torch.utils.data.ConcatDataset(datasets)
+    return torch.utils.data.DataLoader(
+        pooled, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True
+    )
