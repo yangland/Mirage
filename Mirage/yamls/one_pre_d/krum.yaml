@@ -116,6 +116,7 @@ train_radius_scale: 3.0
 project_every: 2
 
 beta_grad_proj: 0.5
+polish_asr_drop_thresh: 0.10   # ASR drop threshold for polishing
 post_fix_polish_steps: 1
 post_fix_polish_batches: 1
 post_fix_polish_lr: 0.01
@@ -123,3 +124,9 @@ use_dir_schedule: true          # ramp λ_dir over epochs
 beta_grad_proj_polish: 0.8      # gradient shaping during polish; None to disable
 max_k_percent: 2                # cap for binary replacement search (protect ASR)
 do_polish_after_fix: true       # toggle polish stage
+
+# --- Attack scheduling / gating ---
+warmup_no_attack_iters: 1           # first n iters: no attack, only evaluate & craft triggers
+attack_min_clean_acc: 0.80           # if global clean acc < this, skip attack this round
+skip_attack_if_region_asr_ge: 0.90   # if region ASR >= this, skip attack for that region
+allow_malicious_as_benign: true      # when an attack is skipped, malicious acts as benign

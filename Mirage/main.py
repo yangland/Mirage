@@ -155,6 +155,7 @@ if __name__ == "__main__":
 
         # === Step 1: Preprocess + client uploads
         server.pre_process(test_data=server.test_dataloader, iteration=iteration)
+        logger.info(f"[Round {iteration}] Aggregation rule: {server.params['aggregation_rule']}, ")
         
         # === Step 2: Select clients
         selected_clients, selected_malicious_clients = server.select_clients(
