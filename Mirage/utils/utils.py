@@ -15,6 +15,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from utils.regoin_utils import flatten_model, check_cos_constraint
+
+from collections.abc import Mapping, Sequence
+import torch
+from torch.utils.data import DataLoader, ConcatDataset
+
 logger = logging.getLogger("logger")
 
 # 创建一个全局变量static_args，用于保存命令行参数
@@ -61,7 +66,7 @@ def args_update(args=None, mkdir=True):
 
     current_time = datetime.datetime.now().strftime("%b.%d_%H.%M.%S")
     agg_method = new_args["agg_method"].lower()
-    new_args["folder_path"] = f"./saved_logs/{new_args['attach']}_{current_time}_{agg_method}"
+    new_args["folder_path"] = f"./savedloggers/{new_args['attach']}_{current_time}_{agg_method}"
     new_args["save_on_iteration"].append(new_args["end_iteration"] - 1)
     if mkdir:
         try:
@@ -439,7 +444,7 @@ def test_model_asr_acc(
     region_id=None,
     loss_fn=None,
     poisoned_batch_injection=None,
-    debug_poison_log: bool = False,   # <— new
+    debug_poisonlogger: bool = False,   # <— new
     debug_poison_every: int = 20, # <— new
     logger=None                       # <— new (optional)
 ) -> dict:
@@ -459,7 +464,7 @@ def test_model_asr_acc(
                     batch=batch, trigger=trigger, mask=mask,
                     is_eval=True, client_id=client_id, region_id=region_id
                 )
-                if debug_poison_log and logger and (bidx % max(1, debug_poison_every) == 0):
+                if debug_poisonlogger and logger and (bidx % max(1, debug_poison_every) == 0):
                     # lightweight fingerprints
                     flip_rate = float((labels != batch[1].to(labels.device)).float().mean().item())
                     mask_fp   = float(mask.float().sum().item()) if mask is not None else -1.0
@@ -553,11 +558,176 @@ def eval_and_log_local(
     )
     return metrics
 
+
+
 def build_pooled_malicious_test_loader(malicious_client, malicious_ids, batch_size):
-    # Gather each malicious client’s *test* subset (same transforms as server test).
-    # If you only have train splits, you can subsample/holdout consistently.
-    datasets = [malicious_client.test_dataloader[cid].dataset for cid in malicious_ids]
-    pooled = torch.utils.data.ConcatDataset(datasets)
-    return torch.utils.data.DataLoader(
-        pooled, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True
+    """
+    Build a 'malicious view' loader by pooling data from the specified malicious clients.
+
+    Preference order:
+      1) Pool per-client *train* datasets for the given malicious IDs (fits MSPDataloader)
+      2) If (1) not available, pool per-client *test* datasets (if you ever add them)
+      3) If neither per-client is available, fall back to the shared test DataLoader (last resort)
+
+    NOTE: Using train datasets means your eval will inherit the *train transforms*
+          (e.g., RandomCrop/Flip for CIFAR). That's fine for a quick attacker-view,
+          but expect some stochasticity. If you need a strict eval-style transform,
+          we can add a transform override later.
+    """
+    td = getattr(malicious_client, "test_dataloader", None)
+    tr = getattr(malicious_client, "train_dataloader", None)
+
+    # --- Preferred path: per-client TRAIN loaders (your MSPDataloader case) ---
+    if isinstance(tr, Mapping) or (isinstance(tr, Sequence) and not isinstance(tr, DataLoader)):
+        datasets = []
+        for cid in malicious_ids:
+            try:
+                dl = tr[cid]
+            except Exception:
+                continue
+            if isinstance(dl, DataLoader) and hasattr(dl, "dataset"):
+                datasets.append(dl.dataset)
+        if datasets:
+            logger.info("[MaliciousView] Pooled malicious clients' *train* datasets for evaluation.")
+            pooled = ConcatDataset(datasets)
+            return DataLoader(pooled, batch_size=batch_size, shuffle=False, drop_last=False,
+                              num_workers=2, pin_memory=True)
+
+    # --- Secondary path: per-client TEST loaders (if you ever change your loader design) ---
+    if isinstance(td, Mapping) or (isinstance(td, Sequence) and not isinstance(td, DataLoader)):
+        datasets = []
+        for cid in malicious_ids:
+            try:
+                dl = td[cid]
+            except Exception:
+                continue
+            if isinstance(dl, DataLoader) and hasattr(dl, "dataset"):
+                datasets.append(dl.dataset)
+        if datasets:
+            logger.info("[MaliciousView] Pooled malicious clients' *test* datasets for evaluation.")
+            pooled = ConcatDataset(datasets)
+            return DataLoader(pooled, batch_size=batch_size, shuffle=False, drop_last=False,
+                              num_workers=2, pin_memory=True)
+
+    # --- Fallback: a single shared test loader (server-style eval) ---
+    if isinstance(td, DataLoader):
+        logger.warning("[MaliciousView] No per-client loaders found; using shared *test* DataLoader as last resort.")
+        return td
+
+    # --- Last-last resort: a single shared train loader (very unusual) ---
+    if isinstance(tr, DataLoader):
+        logger.warning("[MaliciousView] Using shared *train* DataLoader as malicious view (last resort).")
+        return tr
+
+    raise TypeError(
+        "Cannot build pooled malicious test loader: "
+        "no per-client train/test loaders available and no shared test loader found."
     )
+
+
+# --- NEW: pick a loader by view name -------------------------------------------------
+def _pick_loader_for_view(view_name, server_test_loader, mali_test_loader):
+    if view_name == "server":
+        return server_test_loader
+    elif view_name == "malicious":
+        return mali_test_loader
+    else:
+        raise ValueError(f"Unknown view_name: {view_name}")
+
+# --- NEW: dual-view wrapper around test_model_asr_acc --------------------------------
+def test_model_asr_acc_two_views(
+    *,
+    model,
+    device,
+    server_test_loader=None,
+    mali_test_loader=None,
+    trigger=None,
+    mask=None,
+    client_id=None,
+    region_id=None,
+    poisoned_batch_injection=None,
+    logger=None,
+    debug_poisonlogger=False,
+    debug_poison_every=20,
+):
+    """
+    Returns: {"server": {...}, "malicious": {...}} for whichever loaders are provided.
+    Each inner dict has: clean_acc, clean_loss, asr, asr_loss
+    """
+    out = {}
+
+    def _run(view, loader):
+        if loader is None:
+            return None
+        return test_model_asr_acc(
+            model=model,
+            test_dataloader=loader,
+            device=device,
+            trigger=trigger,
+            mask=mask,
+            client_id=client_id,
+            region_id=region_id,
+            poisoned_batch_injection=poisoned_batch_injection,
+            debug_poisonlogger=debug_poisonlogger,
+            debug_poison_every=debug_poison_every,
+            logger=logger,
+        )
+
+    out["server"]    = _run("server", server_test_loader)
+    out["malicious"] = _run("malicious", mali_test_loader)
+    return out
+
+# --- NEW: dual-view local eval logger used during crafting ---------------------------
+def eval_and_log_local_dual(
+    *,
+    model,
+    device,
+    server_test_loader=None,
+    mali_test_loader=None,
+    client_id: int,
+    region_id: int,
+    trigger,
+    mask,
+    poisoned_batch_injection,
+    logger,
+    tag: str = "eval",
+    show_trigger_dbg: bool = False,
+    views=("malicious",),  # default: only log malicious view during crafting
+    **test_kwargs,
+):
+    """
+    Run dual-view eval and log per requested views.
+    Returns {"server": {...} or None, "malicious": {...} or None}
+    """
+    # Optional fingerprints
+    if show_trigger_dbg:
+        from .utils import _tiny_fp  # ensure available
+        logger.info(
+            f"[TriggerDbg][Client {client_id} R{region_id}] "
+            f"eval trig_fp={_tiny_fp(trigger)}, mask_fp={_tiny_fp(mask)}"
+        )
+
+    res = test_model_asr_acc_two_views(
+        model=model,
+        device=device,
+        server_test_loader=server_test_loader,
+        mali_test_loader=mali_test_loader,
+        trigger=trigger,
+        mask=mask,
+        client_id=client_id,
+        region_id=region_id,
+        poisoned_batch_injection=poisoned_batch_injection,
+        logger=logger,
+        **test_kwargs,
+    )
+
+    for v in views:
+        m = res.get(v)
+        if m is None:
+            continue
+        asr_pct = (m["asr"] * 100.0) if (m.get("asr") is not None) else float("nan")
+        logger.info(
+            f"[{v.capitalize()}LocalEval][Client {client_id}] {tag}: "
+            f"clean_acc={m['clean_acc']*100:.2f}%, ASR={asr_pct:.2f}%"
+        )
+    return res

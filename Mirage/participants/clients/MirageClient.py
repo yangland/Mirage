@@ -8,10 +8,11 @@ from torch import nn
 import numpy as np
 from tqdm import tqdm
 from participants.clients.BasicClient import BasicClient
-from utils.utils import poisoned_batch_injection, test_model_asr_acc, _tiny_fp, eval_and_log_local
+from utils.utils import poisoned_batch_injection, test_model_asr_acc, _tiny_fp, eval_and_log_local, eval_and_log_local_dual
 from utils.regoin_utils import flatten_model, compute_geo_loss, project_model_into_region, \
     search_k_percent_to_fix_geometry, apply_delta_to_model, check_cos_constraint, scale_model_update_to_l2_boundary, \
     project_update_inplace_, scale_update_to_l2_boundary_inplace_, _assign_flat_params_, polish_after_fix
+        
 from utils.visualize import visualize, visualize_batch, visualize_tsne
 import torch.nn.functional as F
 
@@ -229,8 +230,10 @@ class MirageClient(BasicClient):
         model,
         train_loader,
         client_id,
-        test_loader=None,
-        region_id=None
+        server_test_loader=None, 
+        mali_test_loader=None,
+        region_id=None,
+        log_trigger_dbg=False,
     ):
         device = self.params["run_device"]
         global_model = copy.deepcopy(model)
@@ -268,8 +271,9 @@ class MirageClient(BasicClient):
         )
         self.trigger_set[client_id] = trigger_
         mask_ = self.mask_set[client_id]
-        logger.info(f"[TriggerDbg][Client {client_id} R{region_id}] "
-            f"pre-train trig_fp={_tiny_fp(trigger_)}, mask_fp={_tiny_fp(mask_)}")
+        if log_trigger_dbg:
+            logger.info(f"[TriggerDbg][Client {client_id} R{region_id}] "
+                f"pre-train trig_fp={_tiny_fp(trigger_)}, mask_fp={_tiny_fp(mask_)}")
 
         self.trigger_set_by_region[region_id] = trigger_
         self.mask_set_by_region[region_id]    = mask_
@@ -295,10 +299,10 @@ class MirageClient(BasicClient):
 
 
         # Optional local eval
-        if test_loader is not None:
+        if server_test_loader is not None:
             metrics = test_model_asr_acc(
                 model=cache_model,
-                test_dataloader=test_loader,
+                test_dataloader=server_test_loader,
                 device=device,
                 trigger=trigger_,
                 mask=mask_,
@@ -320,8 +324,10 @@ class MirageClient(BasicClient):
         train_loader,
         client_id,
         constraint,
-        test_loader=None,
-        region_id=None
+        server_test_loader=None, 
+        mali_test_loader=None,
+        region_id=None,
+        log_trigger_dbg=False
     ):
         """
         Region-constrained local training with geometric loss (for R1–R4).
@@ -358,10 +364,11 @@ class MirageClient(BasicClient):
 
         # also index by region so server evaluation can fetch it directly
         self.trigger_set_by_region[region_id] = trigger_
-        self.mask_set_by_region[region_id] = mask_        
-        
-        logger.info(f"[TriggerDbg][Client {client_id} R{region_id}] "
-            f"pre-train trig_fp={_tiny_fp(trigger_)}, mask_fp={_tiny_fp(mask_)}")
+        self.mask_set_by_region[region_id] = mask_
+
+        if log_trigger_dbg:
+            logger.info(f"[TriggerDbg][Client {client_id} R{region_id}] "
+                        f"pre-train trig_fp={_tiny_fp(trigger_)}, mask_fp={_tiny_fp(mask_)}")
 
         ce_loss = nn.CrossEntropyLoss().to(device)
 
@@ -465,10 +472,11 @@ class MirageClient(BasicClient):
                     project_update_inplace_(cache_model, global_model, train_radius)
 
         # --- TEST[1] BEFORE final L2 scaling ---
-        m_pre = eval_and_log_local(
+        m_pre = eval_and_log_local_dual(
             model=cache_model,
-            test_loader=test_loader,
             device=device,
+            server_test_loader=server_test_loader,
+            mali_test_loader=mali_test_loader,
             client_id=client_id,
             region_id=region_id,
             trigger=trigger_,
@@ -476,7 +484,8 @@ class MirageClient(BasicClient):
             poisoned_batch_injection=poisoned_batch_injection,
             logger=logger,
             tag="pre-scale",
-            show_trigger_dbg=True,   # show the TriggerDbg line once here
+            show_trigger_dbg=False,
+            views=("malicious",),  # <--- only malicious-side eval
         )
 
         # After poisoned training loop, make sure the L2 norm as required
@@ -484,10 +493,11 @@ class MirageClient(BasicClient):
 
 
         # --- TEST[2] AFTER final L2 scaling ---
-        m_post = eval_and_log_local(
+        m_post = eval_and_log_local_dual(
             model=cache_model,
-            test_loader=test_loader,
             device=device,
+            server_test_loader=server_test_loader,
+            mali_test_loader=mali_test_loader,
             client_id=client_id,
             region_id=region_id,
             trigger=trigger_,
@@ -495,7 +505,8 @@ class MirageClient(BasicClient):
             poisoned_batch_injection=poisoned_batch_injection,
             logger=logger,
             tag="post-scale",
-            show_trigger_dbg=True,   # show the TriggerDbg line once here
+            show_trigger_dbg=False,   # show the TriggerDbg line once here
+            views=("malicious",),  # <--- only malicious-side eval
         )
 
         # === Step 5: Validate Geometry ===
@@ -530,9 +541,10 @@ class MirageClient(BasicClient):
                 scale_update_to_l2_boundary_inplace_(cache_model, global_model, l2_radius)
 
                 # 2) Evaluate right after replacement (no polish yet)
-                m_repl = eval_and_log_local(
+                m_repl = eval_and_log_local_dual(
                     model=cache_model,
-                    test_loader=test_loader,
+                    server_test_loader=server_test_loader,
+                    mali_test_loader=mali_test_loader,
                     device=device,
                     client_id=client_id,
                     region_id=region_id,
@@ -542,13 +554,18 @@ class MirageClient(BasicClient):
                     logger=logger,
                     tag="post-replace",
                     show_trigger_dbg=False,
+                    views=("malicious",),  # <--- only malicious-side eval
                 )
 
-                # 3) Decide if polish is even needed based on ASR drop from the post-scale baseline
-                #    (absolute drop in points; default 0.10 = 10 percentage points)
+                # 3) Decide if polish is needed based on ASR drop (malicious view only)
                 asr_drop_thresh = float(self.params.get("polish_asr_drop_thresh", 0.10))
-                post_scale_asr = float(m_post["asr"] if m_post["asr"] is not None else 0.0)
-                post_repl_asr  = float(m_repl["asr"] if m_repl["asr"] is not None else 0.0)
+
+                # m_post and m_repl are dual-view dicts → pick the malicious view safely
+                m_post_mali = (m_post.get("malicious") or {})
+                m_repl_mali = (m_repl.get("malicious") or {})
+
+                post_scale_asr = float(m_post_mali.get("asr") or 0.0)
+                post_repl_asr  = float(m_repl_mali.get("asr") or 0.0)
                 asr_drop = max(0.0, post_scale_asr - post_repl_asr)
 
                 logger.info(
@@ -595,9 +612,10 @@ class MirageClient(BasicClient):
                         # (already on-radius from before polishing)
 
                     # 5) Evaluate after (successful-or-reverted) polish
-                    m_fix = eval_and_log_local(
+                    m_fix = eval_and_log_local_dual(
                         model=cache_model,
-                        test_loader=test_loader,
+                        server_test_loader=server_test_loader,
+                        mali_test_loader=mali_test_loader,
                         device=device,
                         client_id=client_id,
                         region_id=region_id,
@@ -607,6 +625,7 @@ class MirageClient(BasicClient):
                         logger=logger,
                         tag="post-binary-fix",
                         show_trigger_dbg=False,
+                        views=("malicious",),  # <--- only malicious-side eval
                     )
                 else:
                     logger.info(
@@ -635,7 +654,8 @@ class MirageClient(BasicClient):
         model,
         train_loader,
         client_id,
-        test_loader=None,
+        server_test_loader=None,
+        mali_test_loader=None,
         region_constraints=None,
         region_id=None,
         attack_variant="region constraint",  # or "Mirage org", "region constraint"
@@ -655,8 +675,10 @@ class MirageClient(BasicClient):
                 model=model,
                 train_loader=train_loader,
                 client_id=client_id,
-                test_loader=test_loader,
-                region_id=region_id
+                server_test_loader=server_test_loader,
+                mali_test_loader=mali_test_loader,
+                region_id=region_id,
+                log_trigger_dbg=self.params.get("log_trigger_dbg", False)
             )
 
         elif attack_variant == "region constraint":
@@ -669,8 +691,10 @@ class MirageClient(BasicClient):
                 train_loader=train_loader,
                 client_id=client_id,
                 constraint=region_constraints, # constraint for this client
-                test_loader=test_loader,
-                region_id=region_id
+                server_test_loader=server_test_loader,
+                mali_test_loader=mali_test_loader,
+                region_id=region_id,
+                log_trigger_dbg=self.params.get("log_trigger_dbg", False)
             )
         else:
             raise ValueError(f"[ERROR] Unknown attack_variant: {attack_variant}")

@@ -127,6 +127,9 @@ if __name__ == "__main__":
     # region_to_test_client {region_id → client_id}
     # Maps region to the specific client used to test ASR on that region
     region_to_test_client = {}
+    for rid in malicious_client.trigger_set_by_region.keys():
+        if rid not in region_to_test_client:
+            region_to_test_client[rid] = canonical_client_for_region[rid]
     
     logger.info(f"Initial region to test client mapping: {region_to_test_client}")
 
@@ -198,20 +201,23 @@ if __name__ == "__main__":
         )
         
         # === Attack gating (per malicious virtual client) ===
-        in_warmup = iteration < params_loaded.get("warmup_no_attack_iters", 0)
+        round_idx = iteration - server.params["start_iteration"]
+        warmup_len = int(params_loaded.get("warmup_no_attack_iters", 0))  # default 0 = no warmup
+        in_warmup = round_idx < warmup_len
+
         attack_min_acc = params_loaded.get("attack_min_clean_acc", 0.0)
-        skip_if_region_asr_ge = params_loaded.get("skip_attack_if_region_asr_ge", 2.0)  # 2.0 = effectively disabled if not set
+        skip_if_region_asr_ge = params_loaded.get("skip_attack_if_region_asr_ge", 2.0)  # 2.0 ~ disabled
 
         attack_enable_by_client = {}
         for virtual_id in virtual_malicious_clients:
             region_id = client_region_mapping.get(virtual_id)
             attack = not in_warmup
 
-            # Gate by global clean acc (if we have a previous evaluation)
+            # Gate by global clean acc (use last *malicious-view* eval if available)
             if last_global_eval["clean_acc"] is not None and last_global_eval["clean_acc"] < attack_min_acc:
                 attack = False
 
-            # Gate by region ASR (if previous eval says it's already high)
+            # Gate by region ASR
             prev_asr = last_global_eval["asr_by_region"].get(region_id, 0.0)
             if prev_asr >= skip_if_region_asr_ge:
                 attack = False
@@ -219,6 +225,7 @@ if __name__ == "__main__":
             attack_enable_by_client[virtual_id] = attack
 
         logger.info(f"[Round {iteration}] Attack gating per malicious client: {attack_enable_by_client}")
+
 
         # === Step 4: Broadcast model to clients (including poisoned clients)
         (
@@ -236,8 +243,13 @@ if __name__ == "__main__":
             canonical_client_for_region=canonical_client_for_region,  # ✅ FIXED: should map region_id → canonical_client_id
             malicious_client_mapping=malicious_client_mapping,       # ✅ virtual_id → real_id
             attack_enable_by_client=attack_enable_by_client,
+            mali_test_loader=mali_test_loader,
         )
-
+        
+        # Ensure every region that has a trigger is mapped to a test client (warm-up included)
+        for rid in malicious_client.trigger_set_by_region.keys():
+            if rid not in region_to_test_client:
+                region_to_test_client[rid] = canonical_client_for_region[rid]
 
         # === Step 5: Aggregate model
         prev_global_sd = {k: v.detach().clone() for k, v in server.global_model.state_dict().items()}
@@ -287,38 +299,35 @@ if __name__ == "__main__":
         # === Rebuild reverse mapping to be passed to test_global_model
         reverse_client_region_mapping = {
             client_id: region_id
-            for region_id, client_id in region_to_test_client.items()
-        }
+            for region_id, client_id in region_to_test_client.items()}
+
         logger.info(f"Updated reverse mapping: {reverse_client_region_mapping}")
 
 
         # === Step 6: Evaluate global model
         # Server view (clean test set)
-        server_view = server.test_global_model(
+        global_eval = server.test_global_model(
             iteration=iteration,
             malicious_clients=malicious_client,
             possible_region_ids=possible_region_ids_list,
             client_region_mapping=reverse_client_region_mapping,
-            test_loader=None,                # server clean test
-            view="server",
-            show_tsne=params_loaded.get("show_tsne", False)
+            server_test_loader=None,             # defaults to server.test_dataloader
+            mali_test_loader=mali_test_loader,   # pooled malicious set
+            log_views="both",
+            log_trigger_dbg=params_loaded.get("log_trigger_dbg", False),
+            show_tsne=params_loaded.get("show_tsne", False),
         )
 
-        # Malicious view (pooled malicious test set)
-        mali_view = server.test_global_model(
-            iteration=iteration,
-            malicious_clients=malicious_client,
-            possible_region_ids=possible_region_ids_list,
-            client_region_mapping=reverse_client_region_mapping,
-            test_loader=mali_test_loader,    # pooled malicious set
-            view="malicious",
-            show_tsne=False
-        )
+        server_view = global_eval["server"]
+        mali_view   = global_eval["malicious"]
 
-        # Use *malicious view* for next-round gating:
+        # Use malicious view for gating next round
         last_global_eval = {
-            "clean_acc": mali_view["clean_acc"],
-            "asr_by_region": {rid: (mali_view["asr"].get(rid, {}).get("asr", 0.0)) for rid in possible_region_ids_list}
+            "clean_acc": mali_view["clean_acc"] if mali_view else None,
+            "asr_by_region": {
+                rid: (mali_view["asr"].get(rid, {}).get("asr", 0.0) if mali_view else 0.0)
+                for rid in possible_region_ids_list
+            }
         }
 
         logger.info(f"[Round {iteration}] Last global eval (for gating next round): "
@@ -349,42 +358,4 @@ logger.info(f"[Summary] Wrote aggregation preference JSON → {out_json_path}")
 logger.info(f"Round {iteration} completed - FL finished.")
 
 
-
-
-        # --- DEBUG-PROBE: evaluate global model with exactly the current round’s region triggers ---
-        # try:
-        #     attacked_regions_this_round = sorted(set(client_region_mapping.values()))
-        #     for r in attacked_regions_this_round:
-        #         if r not in malicious_client.trigger_set_by_region or r not in malicious_client.mask_set_by_region:
-        #             logger.warning(f"[DEBUG-Probe] Region {r} has no trigger/mask in this round; skipping probe.")
-        #             continue
-
-        #         trig = malicious_client.trigger_set_by_region[r]
-        #         msk  = malicious_client.mask_set_by_region[r]
-
-        #         # Prefer a real client id that was mapped to this region this round; fallback to canonical
-        #         probe_client_id = None
-        #         for cid, rid in client_region_mapping.items():
-        #             if rid == r:
-        #                 probe_client_id = cid
-        #                 break
-        #         if probe_client_id is None:
-        #             probe_client_id = canonical_client_for_region.get(r, None)
-
-        #         logger.info(f"[DEBUG-Probe] Iter {iteration} R{r}: trig_fp={_tiny_fp(trig)}, mask_fp={_tiny_fp(msk)}, "
-        #                     f"probe_client_id={probe_client_id}")
-
-        #         probe = test_model_asr_acc(
-        #             model=server.global_model,
-        #             test_dataloader=server.test_dataloader,
-        #             device=torch.device(server.params.get("run_device", "cpu")),
-        #             trigger=trig,
-        #             mask=msk,
-        #             client_id=probe_client_id,
-        #             region_id=r,
-        #             poisoned_batch_injection=poisoned_batch_injection  # ensure it's imported in this scope
-        #         )
-        #         logger.info(f"[DEBUG-Probe] Iter {iteration} R{r}: ASR={probe['asr']*100:.2f}% (pre formal test)")
-        # except Exception as e:
-        #     logger.exception(f"[DEBUG-Probe] Failed: {e}")
 

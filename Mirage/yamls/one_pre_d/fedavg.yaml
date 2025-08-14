@@ -1,5 +1,5 @@
 # vanilla attack with pixel block trigger no defense yaml
-run_device: cuda:0
+run_device: cuda:1
 resumed_model: saved_models/ResNet18_cifar10_ptm_2000_benign.pt
 data_dir:   ./data
 dataset: cifar10
@@ -124,7 +124,7 @@ max_k_percent: 2                # cap for binary replacement search (protect ASR
 do_polish_after_fix: true       # toggle polish stage
 
 # --- Attack scheduling / gating ---
-warmup_no_attack_iters: 3           # first n iters: no attack, only evaluate & craft triggers
+warmup_no_attack_iters: 1           # first n iters: no attack, only evaluate & craft triggers
 attack_min_clean_acc: 0.80           # if global clean acc < this, skip attack this round
 skip_attack_if_region_asr_ge: 0.90   # if region ASR >= this, skip attack for that region
 allow_malicious_as_benign: true      # when an attack is skipped, malicious acts as benign

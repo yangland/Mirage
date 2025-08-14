@@ -148,93 +148,97 @@ class \
         return selected_clients, selected_malicious_clients
 
 
-
-
-    def test_global_model(self, 
-                        iteration,
-                        malicious_clients, 
-                        possible_region_ids=None, 
-                        client_region_mapping=None, 
-                        test_loader=None,     # NEW: overrides server.test_dataloader
-                        view="server",        # "server" | "malicious"
-                        show_tsne=False):
-        results = {"clean_acc": None, "clean_loss": None, "asr": {}}
+    def test_global_model(
+        self,
+        *,
+        iteration,
+        malicious_clients,
+        possible_region_ids=None,
+        client_region_mapping=None,
+        server_test_loader=None,   # NEW: explicit server loader (defaults to self.test_dataloader)
+        mali_test_loader=None,     # NEW: pooled malicious loader
+        log_views="both",          # "server" | "malicious" | "both"
+        show_tsne=False,
+        log_trigger_dbg=False,
+    ):
+        """
+        Returns:
+        {
+            "server":    {"clean_acc":..., "clean_loss":..., "asr": {rid: {"asr":..., "loss":...}, ...}},
+            "malicious": {... same shape ...}
+        }
+        """
         device = torch.device(self.params.get("run_device", "cpu"))
-        test_loader = test_loader if test_loader is not None else self.test_dataloader
+        server_test_loader = server_test_loader or self.test_dataloader
 
-        # === Clean evaluation ONCE ===
-        clean = test_model_asr_acc(
-            model=self.global_model,
-            test_dataloader=test_loader,
-            device=device,
-            poisoned_batch_injection=poisoned_batch_injection  # <-- pass the function
-        )
-        self.acc_list.append(clean["clean_acc"])
-        results["clean_acc"]  = clean["clean_acc"]
-        results["clean_loss"] = clean["clean_loss"]
+        def _eval_view(view_name, loader):
+            if loader is None:
+                return None
 
-        logger.info(f"{'-'*55}")
-        logger.info(f"| Test Global model in iteration {iteration}")
-        logger.info(f"View: {view}| Loss {clean['clean_loss']:.4f}, Acc {clean['clean_acc'] * 100:.2f}%")
+            # Clean eval
+            clean = test_model_asr_acc(
+                model=self.global_model,
+                test_dataloader=loader,
+                device=device,
+                poisoned_batch_injection=poisoned_batch_injection
+            )
 
-        logger.debug(f"[DEBUG] client_region_mapping = {client_region_mapping}")
-        logger.debug(f"[DEBUG] trigger_set_by_region = {malicious_clients.trigger_set_by_region}")
-        logger.debug(f"[DEBUG] mask_set_by_region = {malicious_clients.mask_set_by_region}")
+            # Header
+            logger.info(f"{'-'*55}")
+            logger.info(f"| Test Global model in iteration {iteration}, view {view_name}")
+            logger.info(f"View: {view_name}| Loss {clean['clean_loss']:.4f}, Acc {clean['clean_acc'] * 100:.2f}%")
 
-        # === ASR evaluation per region ===
-        if iteration >= self.params["poisoned_start_iteration"]:
-            for region_id in possible_region_ids:
-                logger.debug(f"[DEBUG] === Evaluating Region {region_id} ===")
+            view_res = {"clean_acc": clean["clean_acc"], "clean_loss": clean["clean_loss"], "asr": {}}
 
-                if region_id not in malicious_clients.trigger_set_by_region or \
-                region_id not in malicious_clients.mask_set_by_region:
-                    logger.warning(f"[ASR] Skipping Region {region_id} — no trigger/mask available.")
-                    continue
+            # Per-region ASR
+            if iteration >= self.params["poisoned_start_iteration"]:
+                for region_id in (possible_region_ids or []):
+                    if region_id not in malicious_clients.trigger_set_by_region or \
+                    region_id not in malicious_clients.mask_set_by_region:
+                        logger.warning(f"[ASR] Skipping Region {region_id} — no trigger/mask available.")
+                        continue
 
-                trigger = malicious_clients.trigger_set_by_region[region_id]
-                mask    = malicious_clients.mask_set_by_region[region_id]
-                logger.info(f"[TriggerDbg][GlobalEval] R{region_id} trig_fp={_tiny_fp(trigger)}, mask_fp={_tiny_fp(mask)}")
+                    trigger = malicious_clients.trigger_set_by_region[region_id]
+                    mask    = malicious_clients.mask_set_by_region[region_id]
+                    if log_trigger_dbg:
+                        logger.info(f"[TriggerDbg][GlobalEval] R{region_id} trig_fp={_tiny_fp(trigger)}, mask_fp={_tiny_fp(mask)}")
 
+                    test_client_ids = [cid for cid, rid in (client_region_mapping or {}).items() if rid == region_id]
+                    if not test_client_ids:
+                        logger.warning(f"[ASR] Skipping Region {region_id} — no clients mapped for testing.")
+                        continue
 
-                test_client_ids = [cid for cid, rid in client_region_mapping.items() if rid == region_id]
-                logger.debug(f"[DEBUG] Region {region_id} → test_client_ids = {test_client_ids}")
+                    test_client_id = test_client_ids[0]
+                    m = test_model_asr_acc(
+                        model=self.global_model,
+                        test_dataloader=loader,
+                        device=device,
+                        trigger=trigger,
+                        mask=mask,
+                        client_id=test_client_id,
+                        region_id=region_id,
+                        poisoned_batch_injection=poisoned_batch_injection
+                    )
+                    logger.info(f"View: {view_name}| Region {region_id}: ASR {m['asr'] * 100:.2f}%, Loss {m['asr_loss']:.4f}")
+                    view_res["asr"][region_id] = {"asr": m["asr"], "loss": m["asr_loss"]}
 
-                if not test_client_ids:
-                    logger.warning(f"[ASR] Skipping Region {region_id} — no clients mapped for testing.")
-                    continue
+            logger.info(f"{'-'*55}")
+            return view_res
 
-                test_client_id = test_client_ids[0]  # pick one
+        want_server    = log_views in ("both", "server")
+        want_malicious = log_views in ("both", "malicious")
 
-                m = test_model_asr_acc(
-                    model=self.global_model,
-                    test_dataloader=test_loader,
-                    device=device,
-                    trigger=trigger,
-                    mask=mask,
-                    client_id=test_client_id,
-                    region_id=region_id,
-                    poisoned_batch_injection=poisoned_batch_injection  # <-- pass the function
-                )
+        server_view = _eval_view("server", server_test_loader) if want_server else None
+        mali_view   = _eval_view("malicious", mali_test_loader) if want_malicious else None
 
-                logger.info(f"View: {view}| Region {region_id}: ASR {m['asr'] * 100:.2f}%, Loss {m['asr_loss']:.4f}")
-                results["asr"][region_id] = {"asr": m["asr"], "loss": m["asr_loss"]}
-
-        logger.info(f"{'-'*55}")
-
-        if iteration % 50 == 0:
-            logger.info(f"acc_list: {self.acc_list}")
-            for region_id in possible_region_ids:
-                if region_id in results["asr"]:
-                    logger.info(f"ASR of region {region_id}: {results['asr'][region_id]['asr'] * 100:.2f}%")
-
+        # Optional t-SNE (unchanged)
         if show_tsne and (iteration % 10 == 0 or (
-                self.params["malicious_train_algo"] == "Mirage"
-                and iteration % 3 == 0
-                and iteration - self.params["start_save_iteration"] <= 101)):
+            self.params["malicious_train_algo"] == "Mirage"
+            and iteration % 3 == 0
+            and iteration - self.params["start_save_iteration"] <= 101)):
             self._visualize_tsne(iteration, malicious_clients)
 
-        return results
-
+        return {"server": server_view, "malicious": mali_view}
 
 
 

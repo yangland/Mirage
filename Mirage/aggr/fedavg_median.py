@@ -55,25 +55,27 @@ def fedavg(server_model_state_dict, client_updates_dict, average_bn_buffers=True
     """
     Federated averaging of model parameters.
     """
-    print("\n[DEBUG] Entered fedavg()")
+    # print("\n[DEBUG] Entered fedavg()")
     
     # Print types of inputs
-    print(f"[DEBUG] server_model_state_dict type: {type(server_model_state_dict)}")
-    print(f"[DEBUG] client_updates_dict type: {type(client_updates_dict)}")
+    # print(f"[DEBUG] server_model_state_dict type: {type(server_model_state_dict)}")
+    # print(f"[DEBUG] client_updates_dict type: {type(client_updates_dict)}")
     
     # Print a few keys of the server model
     if isinstance(server_model_state_dict, dict):
-        print(f"[DEBUG] server_model_state_dict keys (sample): {list(server_model_state_dict.keys())[:3]}")
+        # print(f"[DEBUG] server_model_state_dict keys (sample): {list(server_model_state_dict.keys())[:3]}")
+        pass
     
     # Print client_updates_dict summary
     if isinstance(client_updates_dict, dict):
-        print(f"[DEBUG] Number of clients: {len(client_updates_dict)}")
+        # print(f"[DEBUG] Number of clients: {len(client_updates_dict)}")
         first_client = next(iter(client_updates_dict))
-        print(f"[DEBUG] First client ID: {first_client}")
-        print(f"[DEBUG] First client update type: {type(client_updates_dict[first_client])}")
+        # print(f"[DEBUG] First client ID: {first_client}")
+        # print(f"[DEBUG] First client update type: {type(client_updates_dict[first_client])}")
         # print(f"[DEBUG] First client update keys (sample): {list(client_updates_dict[first_client].keys())[:3]}")
     else:
-        print("[ERROR] client_updates_dict is not a dict!")
+        # print("[ERROR] client_updates_dict is not a dict!")
+        pass
 
     # Turn updates into a list
     model_list = list(client_updates_dict.values())
@@ -97,7 +99,7 @@ def fedavg(server_model_state_dict, client_updates_dict, average_bn_buffers=True
         else:
             avg_model[key] = torch.stack([m[key] for m in model_list]).mean(0)
 
-    print("[DEBUG] Aggregation complete. Returning averaged model.")
+    # print("[DEBUG] Aggregation complete. Returning averaged model.")
     
     # model weights for clients
     n_clients = len(client_updates_dict)
