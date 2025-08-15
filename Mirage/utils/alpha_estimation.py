@@ -2,7 +2,7 @@
 import torch
 import numpy as np
 from typing import Dict, List, Tuple, Any, Optional
-
+import math
 
 def _l2(v: torch.Tensor) -> float:
     return float(v.norm().item())
@@ -72,6 +72,7 @@ def estimate_alpha_update_mixture(
     return alpha, debug
 
 
+
 def make_round_alpha_rows(
     *,
     iteration: int,
@@ -82,31 +83,43 @@ def make_round_alpha_rows(
     malicious_clients: List[int],
     client_region_mapping: Dict[int, int],
     region_constraints_dict: Dict[int, dict],
-    sim_benign_avg_update: Optional[Dict[str, torch.Tensor]] = None,  # provided from broadcast_upload
-    real_benign_avg_update: Optional[Dict[str, torch.Tensor]] = None, # provided from broadcast_upload
+    sim_benign_avg_update: Optional[Dict[str, torch.Tensor]] = None,   # from broadcast_upload
+    real_benign_avg_update: Optional[Dict[str, torch.Tensor]] = None,  # from broadcast_upload
+    attack_enable_by_client: Optional[Dict[int, bool]] = None,         # NEW
+    include_disabled: bool = True,                                     # NEW (default keeps old behavior)
 ) -> List[dict]:
     """
     For each attacked region:
+      - Build the malicious centroid from either all mapped malicious virtual clients (include_disabled=True),
+        or only those whose attack was actually enabled (include_disabled=False).
       - Estimate alpha using *simulated* benign reference (malicious-view).
       - Also estimate alpha using *real* benign reference (server-view).
-      - Log both sets with and without `_real` suffix.
-      - Include diagnostics of sim-vs-real benign discrepancy.
+      - Emit both results (keys w/o suffix for sim; `_real` suffix for server-view),
+        plus round-level diagnostics comparing sim vs real benign references.
+
+    Arguments:
+      attack_enable_by_client: mapping of malicious *virtual ids* -> bool (True if attacked this round).
+      include_disabled: if False, skip disabled malicious clients when forming the region malicious centroid.
+                        If a region has no enabled malicious clients, it is skipped entirely.
     """
-    # Global round delta
+    # --- Global round delta (new - prev) ---
     g_delta = {k: (new_global_sd[k].detach() - prev_global_sd[k].detach()) for k in new_global_sd.keys()}
     g_vec = _sd_update_to_vec(g_delta)
 
-    # Benign refs → vectors
+    # --- Benign references (vectors) ---
     b_sim_vec  = _sd_update_to_vec(sim_benign_avg_update)  if sim_benign_avg_update  is not None else None
     b_real_vec = _sd_update_to_vec(real_benign_avg_update) if real_benign_avg_update is not None else None
 
-    # Sim-vs-real diagnostics (round-level)
+    # --- Sim-vs-real benign diagnostics (round-level) ---
     b_real_l2 = _l2(b_real_vec) if b_real_vec is not None else float("nan")
     b_sim_l2  = _l2(b_sim_vec)  if b_sim_vec  is not None else float("nan")
     b_cos_d   = _cos_dist(b_real_vec, b_sim_vec) if (b_real_vec is not None and b_sim_vec is not None) else float("nan")
-    b_l2_pct_diff = (abs(b_real_l2 - b_sim_l2) / max(b_real_l2, 1e-12)) if (b_real_vec is not None and b_sim_vec is not None) else float("nan")
+    b_l2_pct_diff = (
+        (abs(b_real_l2 - b_sim_l2) / max(b_real_l2, 1e-12))
+        if (b_real_vec is not None and b_sim_vec is not None) else float("nan")
+    )
 
-    # Group malicious virtual clients by region
+    # --- Group malicious virtual clients by region ---
     by_region: Dict[int, List[int]] = {}
     for mid in malicious_clients:
         rid = client_region_mapping.get(mid)
@@ -118,23 +131,40 @@ def make_round_alpha_rows(
     rows: List[dict] = []
 
     for rid, mids in by_region.items():
-        # average malicious update for this region
-        mal_updates = [updates_by_client[cid] for cid in mids if cid in updates_by_client]
+        # Filter out disabled attacks if requested
+        if attack_enable_by_client is None:
+            active_mids = mids
+        else:
+            active_mids = [mid for mid in mids if attack_enable_by_client.get(mid, True)]
+
+        if not include_disabled:
+            # If none actively attacked in this region, skip emitting a row
+            if len(active_mids) == 0:
+                continue
+            mids_for_centroid = active_mids
+        else:
+            # Old behavior: use every malicious id mapped to this region (even if gated off)
+            mids_for_centroid = mids
+
+        # Build malicious centroid update for this region
+        mal_updates = [updates_by_client[cid] for cid in mids_for_centroid if cid in updates_by_client]
         if not mal_updates:
-            continue
+            continue  # nothing to estimate from
         m_vec = _sd_update_to_vec(_avg_updates(mal_updates))
 
         c = region_constraints_dict.get(rid, {})
         row = {
             "iteration": int(iteration),
             "region_id": int(rid),
-            "k_mal": int(len(mids)),
+            "k_mal": int(len(mids_for_centroid)),   # count used in centroid
             "P_total": int(P),
+
             # benign diagnostics (sim vs real) — constant across refs
             "b_real_l2": float(b_real_l2),
             "b_sim_l2":  float(b_sim_l2),
             "b_cos_dist": float(b_cos_d),
             "b_l2_pct_diff": float(b_l2_pct_diff),
+
             # geometry snapshot
             "l2_radius": float(c.get("l2_radius", float("nan"))) if c else float("nan"),
             "cosine_threshold": float(c.get("cosine_threshold", float("nan"))) if c else float("nan"),
@@ -142,13 +172,8 @@ def make_round_alpha_rows(
         }
 
         # Compute alphas for both references that are available
-        ref_list = [
-            ("sim",  b_sim_vec,  ""),       # no suffix for simulated (malicious-view)
-            ("real", b_real_vec, "_real"),  # `_real` suffix for server-view
-        ]
-        for ref_name, b_vec, suffix in ref_list:
+        for ref_name, b_vec, suffix in (("sim", b_sim_vec, ""), ("real", b_real_vec, "_real")):
             if b_vec is None:
-                # Keep the keys present with NaNs so CSV schema is stable
                 row[f"alpha_update{suffix}"] = float("nan")
                 row[f"est_mode{suffix}"]     = None
                 row[f"a_raw{suffix}"]        = None
@@ -161,14 +186,12 @@ def make_round_alpha_rows(
             row[f"a_raw{suffix}"]        = dbg.get("a_raw", None)
             row[f"b_raw{suffix}"]        = dbg.get("b_raw", None)
 
-        # Optional: direct alpha discrepancy metrics (malicious-view vs server-view)
+        # Alpha discrepancy (sim vs real)
         a_sim  = row.get("alpha_update")
         a_real = row.get("alpha_update_real")
-        if (a_sim is not None) and (a_real is not None) and all(map(lambda x: isinstance(x, float), [a_sim, a_real])) \
-           and (not (torch.isnan(torch.tensor(a_sim)) or torch.isnan(torch.tensor(a_real)))):
+        if isinstance(a_sim, float) and isinstance(a_real, float) and not (math.isnan(a_sim) or math.isnan(a_real)):
             row["alpha_gap_abs"] = abs(a_sim - a_real)
-            denom = max(abs(a_real), 1e-12)  # relative to server-view alpha
-            row["alpha_gap_rel"] = abs(a_sim - a_real) / denom
+            row["alpha_gap_rel"] = abs(a_sim - a_real) / max(abs(a_real), 1e-12)
         else:
             row["alpha_gap_abs"] = float("nan")
             row["alpha_gap_rel"] = float("nan")

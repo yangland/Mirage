@@ -339,17 +339,6 @@ class No_defense_Server(BasicServer):
             region_constraints_dict = {i: {} for i in range(8)}
 
 
-        # --- compute real benign avg update from this round's actual benign clients ---
-        benign_ids = [cid for cid in selected_clients_list if cid not in malicious_clients_list]
-        real_benign_avg_update = None
-        if benign_ids:
-            ben_round_updates = [
-                weight_accumulator_by_client[cid]
-                for cid in benign_ids if cid in weight_accumulator_by_client
-            ]
-            if ben_round_updates:
-                real_benign_avg_update = _avg_updates(ben_round_updates)
-
         # === Step 3: logging for regions selected/attacked this round ===
         logger.info(f"[Round {iteration}] Using externally provided region assignments: {client_region_mapping}")
         logger.info(f"[Round {iteration}] selected_clients_list: {selected_clients_list}")
@@ -430,6 +419,17 @@ class No_defense_Server(BasicServer):
         for cid in selected_clients_list:
             logger.info(f"Client {cid} update norm: {update_norm_by_client[cid]}")
 
+        # --- compute real benign avg update from this round's actual benign clients ---
+        benign_ids = [cid for cid in selected_clients_list if cid not in malicious_clients_list]
+        real_benign_avg_update = None
+        if benign_ids:
+            ben_round_updates = [
+                weight_accumulator_by_client[cid]
+                for cid in benign_ids if cid in weight_accumulator_by_client
+            ]
+            if ben_round_updates:                            # guard against empty
+                real_benign_avg_update = _avg_updates(ben_round_updates)
+
         # === Step X: fill trigger/mask per region for ASR testing
         self._aggregate_triggers_for_regions(
             selected_clients_list=selected_clients_list,
@@ -439,6 +439,7 @@ class No_defense_Server(BasicServer):
             malicious_client=malicious_client,
             logger=logger,
         )
+        
 
         return (
             weight_accumulator,

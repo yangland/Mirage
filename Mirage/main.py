@@ -224,7 +224,8 @@ if __name__ == "__main__":
                 attack = False
 
             attack_enable_by_client[virtual_id] = attack
-
+        
+        if_attack_round = any(bool(v) for v in attack_enable_by_client.values())
         logger.info(f"[Round {iteration}] Attack gating per malicious client: {attack_enable_by_client}")
 
 
@@ -274,6 +275,8 @@ if __name__ == "__main__":
             region_constraints_dict=region_constraints_dict,
             sim_benign_avg_update=sim_benign_avg_update,
             real_benign_avg_update=real_benign_avg_update,
+            attack_enable_by_client=attack_enable_by_client,
+            include_disabled=False,
         )
         alpha_tracker.log_many(alpha_rows)
 
@@ -344,13 +347,14 @@ if __name__ == "__main__":
         log_backdoor_tracking_csv(
             tracker=main_tracker,
             iteration=iteration,
-            global_eval_results=server_view,
+            global_eval_results=server_view,      # or mali_view; whichever you want to chart
             client_region_mapping=client_region_mapping,
             possible_region_ids_list=possible_region_ids_list,
             malicious_weight_percent=malicious_stats["malicious_weight_percent"],
             malicious_client_ratio=malicious_stats["malicious_client_ratio"],
-        )
-        
+            attack_enable_by_client=attack_enable_by_client,          # NEW
+            malicious_clients_list=virtual_malicious_clients,         # NEW
+        )        
 
         # === Step 7: Save checkpoint
         server.save_model(iteration, malicious_client.trigger_set, malicious_client.mask_set)
