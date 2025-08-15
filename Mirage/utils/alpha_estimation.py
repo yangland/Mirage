@@ -1,7 +1,18 @@
 # utils/alpha_estimation.py
 import torch
 import numpy as np
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
+
+
+def _l2(v: torch.Tensor) -> float:
+    return float(v.norm().item())
+
+def _cos_dist(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> float:
+    an = a.norm(); bn = b.norm()
+    if an.item() < eps or bn.item() < eps:
+        return float("nan")
+    cos_sim = float((a @ b) / (an * bn))
+    return 1.0 - cos_sim
 
 def _sd_update_to_vec(update: Dict[str, torch.Tensor]) -> torch.Tensor:
     """Flatten one client's update dict -> 1D vector on CPU (ignores BN counters)."""
@@ -60,6 +71,7 @@ def estimate_alpha_update_mixture(
     debug = {"mode": mode, "a_raw": a, "b_raw": b}
     return alpha, debug
 
+
 def make_round_alpha_rows(
     *,
     iteration: int,
@@ -70,63 +82,97 @@ def make_round_alpha_rows(
     malicious_clients: List[int],
     client_region_mapping: Dict[int, int],
     region_constraints_dict: Dict[int, dict],
+    sim_benign_avg_update: Optional[Dict[str, torch.Tensor]] = None,  # provided from broadcast_upload
+    real_benign_avg_update: Optional[Dict[str, torch.Tensor]] = None, # provided from broadcast_upload
 ) -> List[dict]:
     """
-    Build alpha rows for all regions attacked this round.
-    Uses update-space LSQ to estimate inclusion weight for each attacked region.
+    For each attacked region:
+      - Estimate alpha using *simulated* benign reference (malicious-view).
+      - Also estimate alpha using *real* benign reference (server-view).
+      - Log both sets with and without `_real` suffix.
+      - Include diagnostics of sim-vs-real benign discrepancy.
     """
-    # Compute global round delta (new - prev)
-    g_delta = {}
-    for k, v in new_global_sd.items():
-        if k.endswith("num_batches_tracked"):  # keep shape consistency; value ignored in vec
-            g_delta[k] = v.detach() - prev_global_sd[k].detach()
-        else:
-            g_delta[k] = v.detach() - prev_global_sd[k].detach()
+    # Global round delta
+    g_delta = {k: (new_global_sd[k].detach() - prev_global_sd[k].detach()) for k in new_global_sd.keys()}
     g_vec = _sd_update_to_vec(g_delta)
 
-    # Partition client updates
-    benign_ids = [cid for cid in selected_clients if cid not in malicious_clients]
-    rows = []
+    # Benign refs → vectors
+    b_sim_vec  = _sd_update_to_vec(sim_benign_avg_update)  if sim_benign_avg_update  is not None else None
+    b_real_vec = _sd_update_to_vec(real_benign_avg_update) if real_benign_avg_update is not None else None
 
-    # Average benign updates in this round (what actually contributed)
-    ben_updates = [updates_by_client[cid] for cid in benign_ids if cid in updates_by_client]
-    ben_avg = _avg_updates(ben_updates)
-    if not ben_avg:
-        # Degenerate (shouldn't happen in your setup)
-        ben_avg = {k: torch.zeros_like(v) for k, v in g_delta.items()}
-    b_vec = _sd_update_to_vec(ben_avg)
+    # Sim-vs-real diagnostics (round-level)
+    b_real_l2 = _l2(b_real_vec) if b_real_vec is not None else float("nan")
+    b_sim_l2  = _l2(b_sim_vec)  if b_sim_vec  is not None else float("nan")
+    b_cos_d   = _cos_dist(b_real_vec, b_sim_vec) if (b_real_vec is not None and b_sim_vec is not None) else float("nan")
+    b_l2_pct_diff = (abs(b_real_l2 - b_sim_l2) / max(b_real_l2, 1e-12)) if (b_real_vec is not None and b_sim_vec is not None) else float("nan")
 
-    # Group malicious by region
-    by_region = {}
+    # Group malicious virtual clients by region
+    by_region: Dict[int, List[int]] = {}
     for mid in malicious_clients:
-        rid = client_region_mapping.get(mid, None)
+        rid = client_region_mapping.get(mid)
         if rid is None:
             continue
         by_region.setdefault(rid, []).append(mid)
 
     P = len(selected_clients)
+    rows: List[dict] = []
+
     for rid, mids in by_region.items():
+        # average malicious update for this region
         mal_updates = [updates_by_client[cid] for cid in mids if cid in updates_by_client]
         if not mal_updates:
             continue
-        mal_avg = _avg_updates(mal_updates)
-        m_vec = _sd_update_to_vec(mal_avg)
-
-        alpha, dbg = estimate_alpha_update_mixture(g_vec, m_vec, b_vec)
+        m_vec = _sd_update_to_vec(_avg_updates(mal_updates))
 
         c = region_constraints_dict.get(rid, {})
-        rows.append({
-            "iteration": iteration,
+        row = {
+            "iteration": int(iteration),
             "region_id": int(rid),
             "k_mal": int(len(mids)),
             "P_total": int(P),
-            "alpha_update": float(alpha),
-            "est_mode": dbg.get("mode", "lsq"),
-            "a_raw": dbg.get("a_raw", None),
-            "b_raw": dbg.get("b_raw", None),
-            # geometry snapshot for convenience (duplicated in geometry csv too)
+            # benign diagnostics (sim vs real) — constant across refs
+            "b_real_l2": float(b_real_l2),
+            "b_sim_l2":  float(b_sim_l2),
+            "b_cos_dist": float(b_cos_d),
+            "b_l2_pct_diff": float(b_l2_pct_diff),
+            # geometry snapshot
             "l2_radius": float(c.get("l2_radius", float("nan"))) if c else float("nan"),
             "cosine_threshold": float(c.get("cosine_threshold", float("nan"))) if c else float("nan"),
             "update_cone_mode": int(c.get("update_cone_mode", 0)) if c else 0,
-        })
+        }
+
+        # Compute alphas for both references that are available
+        ref_list = [
+            ("sim",  b_sim_vec,  ""),       # no suffix for simulated (malicious-view)
+            ("real", b_real_vec, "_real"),  # `_real` suffix for server-view
+        ]
+        for ref_name, b_vec, suffix in ref_list:
+            if b_vec is None:
+                # Keep the keys present with NaNs so CSV schema is stable
+                row[f"alpha_update{suffix}"] = float("nan")
+                row[f"est_mode{suffix}"]     = None
+                row[f"a_raw{suffix}"]        = None
+                row[f"b_raw{suffix}"]        = None
+                continue
+
+            alpha, dbg = estimate_alpha_update_mixture(g_vec, m_vec, b_vec)
+            row[f"alpha_update{suffix}"] = float(alpha)
+            row[f"est_mode{suffix}"]     = dbg.get("mode", "lsq")
+            row[f"a_raw{suffix}"]        = dbg.get("a_raw", None)
+            row[f"b_raw{suffix}"]        = dbg.get("b_raw", None)
+
+        # Optional: direct alpha discrepancy metrics (malicious-view vs server-view)
+        a_sim  = row.get("alpha_update")
+        a_real = row.get("alpha_update_real")
+        if (a_sim is not None) and (a_real is not None) and all(map(lambda x: isinstance(x, float), [a_sim, a_real])) \
+           and (not (torch.isnan(torch.tensor(a_sim)) or torch.isnan(torch.tensor(a_real)))):
+            row["alpha_gap_abs"] = abs(a_sim - a_real)
+            denom = max(abs(a_real), 1e-12)  # relative to server-view alpha
+            row["alpha_gap_rel"] = abs(a_sim - a_real) / denom
+        else:
+            row["alpha_gap_abs"] = float("nan")
+            row["alpha_gap_rel"] = float("nan")
+
+        rows.append(row)
+
     return rows

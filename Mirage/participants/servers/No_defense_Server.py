@@ -9,6 +9,7 @@ import torch
 from participants.servers.BasicServer import BasicServer
 from utils.utils import model_dist_norm_var, update_weight_accumulator, model_weight_diff, \
     update_weight_accumulator_direct, _tiny_fp
+from utils.alpha_estimation import _avg_updates
 from utils.regoin_utils import compute_benign_statistics, build_region_constraints
 import random
 
@@ -307,6 +308,14 @@ class No_defense_Server(BasicServer):
             )
             benign_models_from_malicious.append(trained_model)
 
+        sim_benign_avg_update = None
+        if benign_models_from_malicious:
+            sim_benign_updates = [
+                model_weight_diff(after=m.state_dict(), before=global_model.state_dict())
+                for m in benign_models_from_malicious
+            ]
+            sim_benign_avg_update = _avg_updates(sim_benign_updates)
+
         # === Step 2: region constraints ===
         if len(benign_models_from_malicious) > 1:
             region_stats = compute_benign_statistics(benign_models_from_malicious, global_model)
@@ -328,6 +337,18 @@ class No_defense_Server(BasicServer):
         else:
             logger.warning("Not enough benign-like models to compute region statistics.")
             region_constraints_dict = {i: {} for i in range(8)}
+
+
+        # --- compute real benign avg update from this round's actual benign clients ---
+        benign_ids = [cid for cid in selected_clients_list if cid not in malicious_clients_list]
+        real_benign_avg_update = None
+        if benign_ids:
+            ben_round_updates = [
+                weight_accumulator_by_client[cid]
+                for cid in benign_ids if cid in weight_accumulator_by_client
+            ]
+            if ben_round_updates:
+                real_benign_avg_update = _avg_updates(ben_round_updates)
 
         # === Step 3: logging for regions selected/attacked this round ===
         logger.info(f"[Round {iteration}] Using externally provided region assignments: {client_region_mapping}")
@@ -423,6 +444,8 @@ class No_defense_Server(BasicServer):
             weight_accumulator,
             weight_accumulator_by_client,
             aggregated_model_id,
-            region_constraints_dict
+            region_constraints_dict,
+            sim_benign_avg_update,
+            real_benign_avg_update,
         )
 

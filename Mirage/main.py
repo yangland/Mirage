@@ -155,7 +155,7 @@ if __name__ == "__main__":
 
         # === Step 1: Preprocess + client uploads
         server.pre_process(test_data=server.test_dataloader, iteration=iteration)
-        logger.info(f"[Round {iteration}] Aggregation rule: {server.params['aggregation_rule']}, ")
+        logger.info(f"[Round {iteration}] Aggregation rule: {server.params['agg_method']}, ")
         
         # === Step 2: Select clients
         selected_clients, selected_malicious_clients = server.select_clients(
@@ -233,7 +233,9 @@ if __name__ == "__main__":
             weight_accumulator,
             weight_accumulator_by_client,
             aggregated_model_id,
-            region_constraints_dict
+            region_constraints_dict,
+            sim_benign_avg_update,
+            real_benign_avg_update,
         ) = server.broadcast_upload(
             iteration=iteration,
             benign_client=benign_client,
@@ -270,6 +272,8 @@ if __name__ == "__main__":
             malicious_clients=virtual_malicious_clients,
             client_region_mapping=client_region_mapping,
             region_constraints_dict=region_constraints_dict,
+            sim_benign_avg_update=sim_benign_avg_update,
+            real_benign_avg_update=real_benign_avg_update,
         )
         alpha_tracker.log_many(alpha_rows)
 
