@@ -128,3 +128,8 @@ warmup_no_attack_iters: 1           # first n iters: no attack, only evaluate & 
 attack_min_clean_acc: 0.80           # if global clean acc < this, skip attack this round
 skip_attack_if_region_asr_ge: 0.80   # if region ASR >= this, skip attack for that region
 allow_malicious_as_benign: true      # when an attack is skipped, malicious acts as benign
+
+# ---- Phase control ----
+mode: cartography            # cartography | pga
+pga_objective: backdoor      # backdoor | untargeted
+# pref_json: path/to/agg_pref_summary.json  # optional; CLI overrides

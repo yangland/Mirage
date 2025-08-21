@@ -9,7 +9,6 @@ import logging
 import argparse
 from colorama import Fore
 from torchsummary import summary
-
 from datasets.MSP_dataloader import MSPDataloader
 
 from participants.clients.BenignClient import BenignClient
@@ -27,6 +26,7 @@ from utils.region_geometry_tracker import RegionGeometryTracker
 from utils.alpha_estimation import make_round_alpha_rows
 from utils.agg_pref_summary import summarize_preferences
 import os
+import json
 
 logger = logging.getLogger("logger")
 
@@ -70,6 +70,7 @@ if __name__ == "__main__":
     parser.add_argument("--gpu_id", default="0", type=str)
     parser.add_argument("--model_type", default="ResNet18", type=str)
     parser.add_argument("--dataset", default="CIFAR10", type=str)
+    parser.add_argument("--pref_json", default="", type=str)  # ADD: Phase-2 JSON path (optional override)
 
     args = parser.parse_args()
     params_loaded = args_update(args)
@@ -87,6 +88,74 @@ if __name__ == "__main__":
         params_loaded["poisoned_len"] = 4
     else:
         raise NotImplementedError
+
+
+    # ==== Phase selection & PGA bootstrap ====
+    mode = str(params_loaded.get("mode", "cartography")).lower()
+    params_loaded["mode"] = mode  # normalize
+    params_loaded["pga_objective"] = str(params_loaded.get("pga_objective", "backdoor")).lower()
+
+    if mode == "pga":
+        # 1) Resolve preference JSON path (CLI overrides YAML, else default in run folder)
+        pref_path = (
+            args.pref_json
+            or params_loaded.get("pref_json", "")
+            or os.path.join(params_loaded.get("folder_path", "."), "agg_pref_summary.json")
+        )
+        if not os.path.isfile(pref_path):
+            raise FileNotFoundError(f"[PGA] Preference JSON not found at: {pref_path}")
+        with open(pref_path, "r") as f:
+            pga_prefs = json.load(f)
+        params_loaded["pga_prefs"] = pga_prefs
+
+        # 2) Pull sensitivities (always in [0,1]) and raw betas
+        sens = pga_prefs.get("agg_rule_inference", {}).get("sensitivity", {})
+        s_norm = float(sens.get("norm", 0.5))
+        s_dir  = float(sens.get("direction", 0.5))
+
+        betas = pga_prefs.get("agg_rule_inference", {}).get("beta_raw", {})
+        b_norm = abs(float(betas.get("beta_norm", 0.0)))
+        b_dir  = abs(float(betas.get("beta_dir",  0.0)))
+        
+        # 2b) Per-region preference scores
+        per_region = pga_prefs.get("per_region", {})
+        reg_scores = {int(k): float(v.get("normalized_median_alpha", 0.0)) for k, v in per_region.items()}
+        reg_raw    = {int(k): float(v.get("median_alpha", 0.0)) for k, v in per_region.items()}
+        ranking = sorted(reg_scores, key=lambda rid: reg_scores[rid], reverse=True)
+
+        # Expose to the rest of the pipeline
+        params_loaded["pga_region_scores"] = reg_scores               # {1: nma1, 2: nma2, 3: nma3, 4: nma4}
+        params_loaded["pga_region_scores_raw"] = reg_raw              # {1: med1, 2: med2, 3: med3, 4: med4}
+        params_loaded["pga_region_ranking"] = ranking                 # e.g., [1, 3, 2, 4]
+        params_loaded["pga_top_region"] = (ranking[0] if ranking else None)
+
+        # 3) Decide λ scale
+        # If YAML provides lambda_pref, use it; else derive a stable default from beta magnitudes.
+        if "lambda_pref" in params_loaded:
+            lam_pref = float(params_loaded["lambda_pref"])
+        else:
+            lam_pref = max(0.75, min(1.5, (b_norm + b_dir) * 20.0))  # heuristic → ~[0.75, 1.5]
+        params_loaded["lambda_pref"] = lam_pref
+
+        # 4) Build Phase-2 penalty weights (kept separate from Phase-1 lambda_dir/mag)
+        params_loaded["lambda_dir_pga"] = lam_pref * s_dir
+        params_loaded["lambda_mag_pga"] = lam_pref * s_norm
+
+        # 5) Auto-select k% for directional repair (no YAML needed)
+        k_min, k_max = 2.0, 12.0
+        auto_k = k_min + (k_max - k_min) * s_dir
+        params_loaded["pga_k_percent"] = float(round(auto_k, 2))
+
+        logger.info(
+            f"[PGA] Loaded preferences from {pref_path} | "
+            f"sens(dir)={s_dir:.3f}, sens(norm)={s_norm:.3f} | "
+            f"lambda_pref={lam_pref:.3f} → "
+            f"λ_dir_pga={params_loaded['lambda_dir_pga']:.3f}, "
+            f"λ_mag_pga={params_loaded['lambda_mag_pga']:.3f} | "
+            f"pga_k_percent={params_loaded['pga_k_percent']:.2f}% | "
+            f"top_region={params_loaded['pga_top_region']} | "
+            f"region_scores={params_loaded['pga_region_scores']}"
+        )
 
 
     logger.info(f'params_loaded["resumed_model"] - {params_loaded["resumed_model"]}')
@@ -359,10 +428,14 @@ if __name__ == "__main__":
         # === Step 7: Save checkpoint
         server.save_model(iteration, malicious_client.trigger_set, malicious_client.mask_set)
 
-alpha_csv_path = alpha_tracker.path
-out_json_path  = os.path.join(params_loaded["folder_path"], "agg_pref_summary.json")
-summarize_preferences(alpha_csv_path, out_json_path)
-logger.info(f"[Summary] Wrote aggregation preference JSON → {out_json_path}")
+if params_loaded.get("mode", "cartography").lower() == "cartography":
+    alpha_csv_path = alpha_tracker.path
+    out_json_path  = os.path.join(params_loaded["folder_path"], "agg_pref_summary.json")
+    summarize_preferences(alpha_csv_path, out_json_path)
+    logger.info(f"[Summary] Wrote aggregation preference JSON → {out_json_path}")
+else:
+    logger.info("[PGA] Phase 2 run — preference summary JSON not written.")
+
 
 logger.info(f"Round {iteration} completed - FL finished.")
 

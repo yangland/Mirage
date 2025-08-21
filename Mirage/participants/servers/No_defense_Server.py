@@ -166,17 +166,43 @@ class No_defense_Server(BasicServer):
                 weight_accumulator=weight_accumulator
             )
         else:
-            # Normal malicious training (region-constrained crafting)
-            updated_model = malicious_client.local_train(
-                iteration=iteration,
-                model=local_model,
-                train_loader=train_loader,
-                client_id=real_id,
-                server_test_loader=self.test_dataloader,
-                mali_test_loader=mali_test_loader,
-                region_constraints=region_constraints_dict.get(region_id, {}),
-                region_id=region_id
-            )
+            mode = str(self.params.get("mode", "cartography")).lower()
+            if mode == "pga":
+                # Phase 2 (PGA) Preference Guarded Attack
+                updated_model = malicious_client.local_train(
+                    iteration=iteration,
+                    model=local_model,
+                    train_loader=train_loader,
+                    client_id=real_id,
+                    server_test_loader=self.test_dataloader,
+                    mali_test_loader=mali_test_loader,
+                    attack_variant="pga",
+                    attack_opts={
+                        "pga": {
+                            "all_region_constraints": region_constraints_dict,
+                            "pga_prefs": self.params.get("pga_prefs", None),
+                            "pga_objective": str(self.params.get("pga_objective", "backdoor")).lower(),
+                            "lambda_dir_pga": float(self.params.get("lambda_dir_pga", 0.5)),
+                            "lambda_mag_pga": float(self.params.get("lambda_mag_pga", 0.5)),
+                            "pga_k_percent": float(self.params.get("pga_k_percent", 8.0)),
+                        }
+                    },
+                )
+            elif mode == "cartography":
+                # Phase 1: region-constrained crafting
+                updated_model = malicious_client.local_train(
+                    iteration=iteration,
+                    model=local_model,
+                    train_loader=train_loader,
+                    client_id=real_id,
+                    server_test_loader=self.test_dataloader,
+                    mali_test_loader=mali_test_loader,
+                    region_constraints=region_constraints_dict.get(region_id, {}),
+                    region_id=region_id
+                )
+            else:
+                Warning("Unknown mode")
+
             single_wa = model_weight_diff(
                 after=updated_model.state_dict(),
                 before=self.global_model.state_dict()
