@@ -661,55 +661,163 @@ class MirageClient(BasicClient):
         pga_opts: Optional[dict] = None,
     ):
         """
-        Phase-2 Preference-Guided Attack with a single options dict (pga_opts).
-        Expected keys in pga_opts (all optional; fallbacks from self.params):
-        - all_region_constraints: Dict[int, dict]  (server's per-region r*, cone, avg_benign, etc.)
-        - pga_prefs: dict                          (Phase-1 JSON)
-        - pga_objective: "backdoor" | "untargeted"
-        - lambda_dir_pga: float                    (from main.py bootstrap)
-        - lambda_mag_pga: float
-        - pga_k_percent: float
+        Preference-Guided Attack (Phase 2), JSON-driven:
+        1) Warm-start with malicious objective only to get Δ_task.
+        2) Pick direction (aligned/opposed) and radius band (small/large) from JSON.
+        3) Enable only needed guidance:
+            - Direction guidance iff σ_dir >= σ_norm AND ⟨Δ_task, u*⟩ < 0.
+            -> add λ_dir * cos_d(Δ, u*) and minimal replacement until cos_d(Δ, u*) <= 1.
+            - Norm guidance iff σ_norm > σ_dir.
+            -> per-step projection to ||Δ|| = r*; else one end-of-training scaling to r*.
+        Returns the updated local model to send to server.
         """
+        # ---------- resolve options ----------
         device = self.params.get("run_device", "cuda")
         opts = pga_opts or {}
 
-        # ---- Resolve config (opts first, then self.params) ----
         all_region_constraints = opts.get("all_region_constraints") \
             or self.params.get("all_region_constraints") or {}
         pga_prefs = opts.get("pga_prefs") or self.params.get("pga_prefs")
         if pga_prefs is None:
             raise ValueError("[PGA] Missing preference JSON (pga_prefs)")
 
+        # objective: "backdoor" or "untargeted"
         pga_objective = (opts.get("pga_objective") or self.params.get("pga_objective", "backdoor")).lower()
-        lam_dir = float(opts.get("lambda_dir_pga", self.params.get("lambda_dir_pga", 0.5)))
-        lam_mag = float(opts.get("lambda_mag_pga", self.params.get("lambda_mag_pga", 0.5)))
-        k_percent = float(opts.get("pga_k_percent", self.params.get("pga_k_percent", 8.0)))
 
-        # ---- Choose region by normalized_median_alpha from JSON ----
+        # base scale (may have been set in main.py) — safe default if absent
+        lambda_pref = float(opts.get("lambda_pref", self.params.get("lambda_pref", 1.0)))
+
+        # sensitivities from JSON
+        sens = pga_prefs.get("agg_rule_inference", {}).get("sensitivity", {})
+        sigma_norm = float(sens.get("norm", 0.5))
+        sigma_dir  = float(sens.get("direction", 0.5))
+
+        # region scores from JSON
         per_region = pga_prefs.get("per_region", {})
         if not per_region:
             raise ValueError("[PGA] per_region missing in preference JSON")
+        s1 = float(per_region.get("1", {}).get("normalized_median_alpha", 0.0))
+        s2 = float(per_region.get("2", {}).get("normalized_median_alpha", 0.0))
+        s3 = float(per_region.get("3", {}).get("normalized_median_alpha", 0.0))
+        s4 = float(per_region.get("4", {}).get("normalized_median_alpha", 0.0))
 
-        reg_scores = {int(k): float(v.get("normalized_median_alpha", 0.0)) for k, v in per_region.items()}
-        rid = max(reg_scores, key=reg_scores.get)
+        # ---------- grad-safe helpers (define only if missing) ----------
+        if "flat_params_with_grad" not in globals():
+            def flat_params_with_grad(m: nn.Module) -> torch.Tensor:
+                return torch.cat([p.view(-1) for p in m.parameters()])
+        if "assign_flat_to_model" not in globals():
+            def assign_flat_to_model(m: nn.Module, flat: torch.Tensor) -> None:
+                off = 0
+                for p in m.parameters():
+                    n = p.numel()
+                    p.data.copy_(flat[off:off+n].view_as(p))
+                    off += n
+        if "cos_distance_vec" not in globals():
+            def cos_distance_vec(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+                an = a / (a.norm() + eps)
+                bn = b / (b.norm() + eps)
+                return 1.0 - torch.dot(an, bn)
+        if "project_to_l2_vec" not in globals():
+            def project_to_l2_vec(delta: torch.Tensor, r: float, eps: float = 1e-12) -> torch.Tensor:
+                n = delta.norm() + eps
+                return delta if n <= r else delta * (r / n)
 
-        # ---- Read region constraints for the chosen region ----
-        region_constraints = (all_region_constraints or {}).get(rid, {})
-        r_star = float(region_constraints.get("l2_radius", 0.0))
-        align_sign = +1 if int(region_constraints.get("update_cone_mode", 1)) == 1 else -1
+        # minimal directional fix: binary search the smallest replacement budget to make dot >= 0
+        def minimal_fix_direction(delta_vec: torch.Tensor, u_vec: torch.Tensor) -> torch.Tensor:
+            with torch.no_grad():
+                N = delta_vec.numel()
+                # order indices by |Δ| ascending
+                _, idx = torch.topk(delta_vec.abs(), k=N, largest=False)
+                left, right = 0, N
+                # quick return if already OK
+                if torch.dot(delta_vec, u_vec) >= 0:
+                    return delta_vec
+                # binary search
+                while left < right:
+                    mid = (left + right) // 2
+                    test = delta_vec.clone()
+                    test[idx[:mid]] = u_vec[idx[:mid]]
+                    if torch.dot(test, u_vec) >= 0:
+                        right = mid
+                    else:
+                        left = mid + 1
+                # apply minimal replacement
+                fixed = delta_vec.clone()
+                if left > 0:
+                    fixed[idx[:left]] = u_vec[idx[:left]]
+                return fixed
 
-        # ---- Copy model and cache base flat params (anchor: global_model = copy.deepcopy(model)) ----
-        global_model = copy.deepcopy(model).to(device)
+        # ---------- Step 0: warm-start (malicious objective only) ----------
+        ce = torch.nn.CrossEntropyLoss().to(device)
+        is_backdoor = (pga_objective == "backdoor")
+
+        global_model = copy.deepcopy(model).to(device)  # anchor: global_model = copy.deepcopy(model)
         global_model.train(True)
-        base_vec = flat_params_with_grad(global_model).detach()  # constant reference
-        # For non-grad logging elsewhere, your flatten_model is still great.
+        base_vec = flat_params_with_grad(global_model).detach()
 
-        # ---- Build Δ_b direction (prefer server-provided average benign model if available) ----
-        avg_benign_model = region_constraints.get("avg_benign_weight", None)
-        if avg_benign_model is not None:
-            delta_b = flat_params_with_grad(avg_benign_model).to(device) - base_vec
-        else:
-            # quick benign step to approximate direction
+        # prepare trigger/mask if backdoor (reuse Phase-1 pipeline if present)
+        trigger, mask = None, None
+        if is_backdoor:
+            if hasattr(self, "trigger_set_by_region"):
+                # if you also kept a "top region" cache, you can reuse; else search
+                cached_any = next(iter(self.trigger_set_by_region.values()), None) if self.trigger_set_by_region else None
+                trigger = cached_any
+                mask = getattr(self, "mask_set_by_region", {}).get(next(iter(self.mask_set_by_region), None), None) if hasattr(self, "mask_set_by_region") else None
+            if trigger is None and hasattr(self, "search_trigger"):
+                trigger = self.search_trigger(model=global_model, train_loader=train_loader,
+                                            client_id=client_id, region_id=None)
+                if not hasattr(self, "trigger_set_by_region"):
+                    self.trigger_set_by_region = {}
+                    self.mask_set_by_region = {}
+                self.trigger_set_by_region[-1] = trigger
+                if mask is None:
+                    mask = torch.ones_like(trigger)
+                    self.mask_set_by_region[-1] = mask
+
+        # small number of warm steps
+        warm_steps = int(self.params.get("pga_warm_steps", 1))
+        opt_warm = torch.optim.SGD(
+            global_model.parameters(),
+            lr=self.params.get('poisoned_lr', 0.05),
+            momentum=self.params.get('poisoned_momentum', 0.0),
+            weight_decay=self.params.get('poisoned_weight_decay', 5e-4),
+        )
+        if warm_steps > 0:
+            it_warm = 0
+            for _ in range(warm_steps):
+                for batch in train_loader:
+                    if is_backdoor and hasattr(self, "poisoned_batch_injection"):
+                        inputs, labels = self.poisoned_batch_injection(
+                            batch=batch, trigger=trigger, mask=mask,
+                            is_eval=False, client_id=client_id, region_id=None
+                        )
+                    else:
+                        inputs, labels = batch
+                    inputs, labels = inputs.to(device), labels.to(device)
+                    opt_warm.zero_grad()
+                    logits = global_model(inputs)
+                    loss_obj = ce(logits, labels) if is_backdoor else -ce(logits, labels)
+                    loss_obj.backward()
+                    opt_warm.step()
+                    it_warm += 1
+                    # one or two batches are enough to probe direction
+                    if it_warm >= max(1, self.params.get("pga_warm_batches", 1)):
+                        break
+                if it_warm >= max(1, self.params.get("pga_warm_batches", 1)):
+                    break
+
+        theta_after_warm = flat_params_with_grad(global_model).detach()
+        delta_task = theta_after_warm - base_vec  # Δ_task
+
+        # ---------- benign reference update Δ_b ----------
+        # Prefer server-provided benign mean in any region constraint; else quick benign step
+        delta_b = None
+        for rid_try in (1, 2, 3, 4):
+            rc = all_region_constraints.get(rid_try, {})
+            if "avg_benign_weight" in rc and rc["avg_benign_weight"] is not None:
+                delta_b = flat_params_with_grad(rc["avg_benign_weight"]).to(device) - base_vec
+                break
+        if delta_b is None:
             benign_m = copy.deepcopy(model).to(device)
             benign_m.train(True)
             opt_b = torch.optim.SGD(
@@ -718,6 +826,7 @@ class MirageClient(BasicClient):
                 momentum=self.params.get('benign_momentum', 0.9),
                 weight_decay=self.params.get('benign_weight_decay', 5e-4),
             )
+            # one quick batch
             for xb, yb in train_loader:
                 xb, yb = xb.to(device), yb.to(device)
                 opt_b.zero_grad()
@@ -727,34 +836,51 @@ class MirageClient(BasicClient):
                 break
             delta_b = flat_params_with_grad(benign_m).to(device) - base_vec
 
-        u_ref = delta_b if align_sign > 0 else (-delta_b)
+        # ---------- Step 1: pick direction sign and radius band from JSON ----------
+        s_aligned = max(s1, s2)
+        s_opposed = max(s3, s4)
+        align_sign = +1 if s_aligned >= s_opposed else -1
+        u_ref = align_sign * delta_b
 
-        # ---- Objective selector ----
-        ce = torch.nn.CrossEntropyLoss().to(device)
-        is_backdoor = (pga_objective == "backdoor")
+        s_small = max(s1, s3)
+        s_large = max(s2, s4)
 
-        # Prepare trigger/mask if backdoor objective (reuse Phase-1 pipeline if present)
-        trigger, mask = None, None
-        if is_backdoor:
-            if hasattr(self, "trigger_set_by_region") and rid in self.trigger_set_by_region:
-                trigger = self.trigger_set_by_region[rid]
-                mask = getattr(self, "mask_set_by_region", {}).get(rid, None)
-            else:
-                if hasattr(self, "search_trigger"):
-                    trigger = self.search_trigger(
-                        model=global_model, train_loader=train_loader,
-                        client_id=client_id, region_id=rid
-                    )
-                    if not hasattr(self, "trigger_set_by_region"):
-                        self.trigger_set_by_region = {}
-                        self.mask_set_by_region = {}
-                    self.trigger_set_by_region[rid] = trigger
-                    mask = getattr(self, "mask_set_by_region", {}).get(rid, None)
-                    if mask is None:
-                        mask = torch.ones_like(trigger)
-                        self.mask_set_by_region[rid] = mask
+        # collect band radii from constraints; fallback to YAML scales * ||Δ_b||
+        def band_radius_from_constraints(ids):
+            vals = []
+            for rid_try in ids:
+                rc = all_region_constraints.get(rid_try, {})
+                if "l2_radius" in rc:
+                    vals.append(float(rc["l2_radius"]))
+            return (sum(vals) / len(vals)) if len(vals) > 0 else None
 
-        # ---- Optimizer / schedule ----
+        r_small = band_radius_from_constraints([1, 3])
+        r_large = band_radius_from_constraints([2, 4])
+
+        if r_small is None or r_large is None:
+            # fallback using YAML scales and benign norm
+            scales_S = self.params.get("l2_scale_min", [0.5, 1.2])
+            scales_L = self.params.get("l2_scale_max", [3.0, 5.0])
+            bnorm = float(delta_b.norm().item())
+            r_small = r_small or (0.5 * (scales_S[0] + scales_S[1]) * bnorm)
+            r_large = r_large or (0.5 * (scales_L[0] + scales_L[1]) * bnorm)
+
+        use_large_band = (s_large > s_small)
+        r_star = float(r_large if use_large_band else r_small)
+
+        # ---------- Step 2: enable only what is needed ----------
+        # direction enabled iff σ_dir >= σ_norm AND Δ_task in wrong half-space
+        dir_enabled = (sigma_dir >= sigma_norm) and (torch.dot(delta_task, u_ref) < 0)
+        # norm enabled iff σ_norm > σ_dir
+        norm_enabled = (sigma_norm > sigma_dir)
+
+        lam_dir = (lambda_pref * sigma_dir) if dir_enabled else 0.0
+        lam_mag = (lambda_pref * sigma_norm) if norm_enabled else 0.0
+
+        logger.info(f"[PGA] dir_enabled={dir_enabled}, norm_enabled={norm_enabled}, "
+                    f"align_sign={align_sign}, band={'L' if use_large_band else 'S'}, r*={r_star:.4f}")
+
+        # ---------- Step 3: final optimization with needed terms only ----------
         opt = torch.optim.SGD(
             global_model.parameters(),
             lr=self.params.get('poisoned_lr', 0.05),
@@ -764,82 +890,86 @@ class MirageClient(BasicClient):
         project_every = int(self.params.get("project_every", 2))
         steps = int(self.params.get("poisoned_retrain_no_times", 5))
 
-        # ---- Training loop ----
         for epoch in range(steps):
             for bidx, batch in enumerate(train_loader):
 
-                if is_backdoor:
-                    if hasattr(self, "poisoned_batch_injection"):
-                        inputs, labels = self.poisoned_batch_injection(
-                            batch=batch, trigger=trigger, mask=mask,
-                            is_eval=False, client_id=client_id, region_id=rid
-                        )
-                    else:
-                        inputs, labels = batch
+                # build batch
+                if is_backdoor and hasattr(self, "poisoned_batch_injection"):
+                    inputs, labels = self.poisoned_batch_injection(
+                        batch=batch, trigger=trigger, mask=mask,
+                        is_eval=False, client_id=client_id, region_id=None
+                    )
                 else:
-                    # untargeted availability: maximize CE => minimize (-CE)
                     inputs, labels = batch
-
                 inputs, labels = inputs.to(device), labels.to(device)
 
+                # forward & task loss
                 opt.zero_grad()
                 logits = global_model(inputs)
                 loss_obj = ce(logits, labels) if is_backdoor else -ce(logits, labels)
 
+                # current Δ
                 theta_vec = flat_params_with_grad(global_model)
                 delta_vec = theta_vec - base_vec
 
-                # Preference-guided penalties (differentiable)
-                cd = cos_distance_vec(delta_vec, u_ref)
-                rad_pen = (delta_vec.norm() - float(r_star)) ** 2
-                loss = loss_obj + lam_dir * cd + lam_mag * rad_pen
-
-                if torch.isnan(loss):
-                    logger.warning(f"[PGA] NaN loss at epoch {epoch}, batch {bidx}; skipping step")
-                    continue
+                # preference penalties (only the enabled ones)
+                loss = loss_obj
+                if lam_dir > 0.0:
+                    loss = loss + lam_dir * cos_distance_vec(delta_vec, u_ref)
+                if lam_mag > 0.0:
+                    loss = loss + lam_mag * (delta_vec.norm() - r_star) ** 2
 
                 loss.backward()
                 opt.step()
 
-                # Projection to the exact radius r*
-                theta_vec = flat_params_with_grad(global_model)
-                delta_vec = theta_vec - base_vec
-                delta_vec = project_to_l2_vec(delta_vec, float(r_star))
-                assign_flat_to_model(global_model, base_vec + delta_vec)
-
-                # Directional repair (bottom-k%) if Δ is on the wrong side of Δ_b
-                dot = torch.dot(delta_vec, delta_b)
-                want_sign = 1 if align_sign > 0 else -1
-                wrong_side = (dot >= 0 and want_sign < 0) or (dot < 0 and want_sign > 0)
-                if wrong_side:
-                    delta_vec = bottom_k_align_vec(delta_vec, delta_b, float(k_percent), want_sign)
-                    delta_vec = project_to_l2_vec(delta_vec, float(r_star))
-                    assign_flat_to_model(global_model, base_vec + delta_vec)
-
-                if project_every and ((bidx + 1) % project_every == 0):
+                # norm guidance: project each step
+                if norm_enabled:
                     theta_vec = flat_params_with_grad(global_model)
                     delta_vec = theta_vec - base_vec
-                    delta_vec = project_to_l2_vec(delta_vec, float(r_star))
+                    delta_vec = project_to_l2_vec(delta_vec, r_star)
                     assign_flat_to_model(global_model, base_vec + delta_vec)
 
-        # ---- Optional eval (purely for logging) ----
+                # direction guidance: minimal repair only if still wrong half-space
+                if lam_dir > 0.0:
+                    theta_vec = flat_params_with_grad(global_model)
+                    delta_vec = theta_vec - base_vec
+                    if torch.dot(delta_vec, u_ref) < 0:
+                        delta_vec = minimal_fix_direction(delta_vec, u_ref)
+                        if norm_enabled:
+                            delta_vec = project_to_l2_vec(delta_vec, r_star)
+                        assign_flat_to_model(global_model, base_vec + delta_vec)
+
+                if project_every and ((bidx + 1) % project_every == 0) and norm_enabled:
+                    theta_vec = flat_params_with_grad(global_model)
+                    delta_vec = theta_vec - base_vec
+                    delta_vec = project_to_l2_vec(delta_vec, r_star)
+                    assign_flat_to_model(global_model, base_vec + delta_vec)
+
+        # end-of-training scaling if norm not enabled
+        if not norm_enabled:
+            theta_vec = flat_params_with_grad(global_model)
+            delta_vec = theta_vec - base_vec
+            if delta_vec.norm().item() > 0:
+                delta_vec = project_to_l2_vec(delta_vec, r_star)  # single scaling
+                assign_flat_to_model(global_model, base_vec + delta_vec)
+
+        # optional eval logging (unchanged)
         try:
             if server_test_loader is not None:
                 if is_backdoor and hasattr(self, "test_model_asr_acc"):
                     metrics = self.test_model_asr_acc(
                         model=global_model, test_dataloader=server_test_loader, device=device,
-                        trigger=trigger, mask=mask, client_id=client_id, region_id=rid,
+                        trigger=trigger, mask=mask, client_id=client_id, region_id=None,
                         poisoned_batch_injection=getattr(self, "poisoned_batch_injection", None)
                     )
-                    logger.info(f"[PGA][Client {client_id}|R{rid}] clean_acc={metrics.get('clean_acc',0)*100:.2f}%, ASR={metrics.get('asr',0)*100:.2f}%")
+                    logger.info(f"[PGA][Client {client_id}] clean_acc={metrics.get('clean_acc',0)*100:.2f}%, ASR={metrics.get('asr',0)*100:.2f}%")
                 elif hasattr(self, "eval_acc"):
                     acc = self.eval_acc(global_model, server_test_loader, device=device)
-                    logger.info(f"[PGA][Client {client_id}|R{rid}] clean_acc={acc*100:.2f}% (untargeted)")
+                    logger.info(f"[PGA][Client {client_id}] clean_acc={acc*100:.2f}% (untargeted)")
         except Exception as e:
             logger.warning(f"[PGA] Eval skipped: {e}")
 
         return global_model
-
 
 
     def local_train(
